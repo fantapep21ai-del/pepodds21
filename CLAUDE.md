@@ -71,11 +71,14 @@ Non creare nuove cartelle top-level senza chiedere.
 
 ## Current Goals
 
-- Rideploy su nuovo server Hetzner dopo fix sicurezza Redis
-- Verificare che tutti i Celery task girino correttamente dopo il deploy
-- Monitorare i primi alert Telegram post-deploy
+✅ **DEPLOY COMPLETATO (2026-04-27)**
+- BUG #1: UNIQUE INDEX parziale (race condition fix) ✅
+- BUG #2: Fuzzy matching WRatio + NFKD (team settlement) ✅
+- BUG #3: Retry cap MAX_RETRIES=5 + exponential backoff ✅
+- Tutte i Celery task girono correttamente ✅
+- Redis password-protected, porte non esposte ✅
 
-Non lavorare su nuove feature fino al deploy funzionante.
+**Prossimo:** Monitorare logs per team matching success ("H2H MATCH WRatio") e retry caps.
 
 ## Important Context
 
@@ -86,6 +89,12 @@ Non lavorare su nuove feature fino al deploy funzionante.
 - `UncertaintyAgent` è l'unico agente che gira in automatico — gli altri 7 sono on-demand
 - CLV blacklist: bookmaker con performance negative vengono esclusi automaticamente via Redis
 - Freshness quote: solo quote < 6h vengono usate nella pipeline
+
+**BUG FIXES (2026-04-27):**
+- **BUG #1:** Migration 005 applica CREATE UNIQUE INDEX parziale su (match_id, market, outcome) con WHERE status IN ('pending', 'in_attesa', 'bet_placed'). Impedisce race condition — due worker non creano duplicati. Indice parziale permette opportunità vecchie duplicate.
+- **BUG #2:** settlement_service.py usa WRatio fuzzy matching con NFKD normalization per team name settlement. Threshold dinamico: 90% nomi corti (<8 char), 85% lunghi. Gestisce accenti, abbreviazioni, case-insensitivity.
+- **BUG #3:** settlement_service.py ha retry logic con MAX_RETRIES=5 cap e exponential backoff (2^retry_count secondi). Evita hammer su The Odds API se score non disponibile. Fallisce gracefully dopo 5 tentativi.
+- **Bonus Fix:** PnL calculation (linea 170) converte float(bet.odds) per evitare Decimal multiplication TypeError.
 
 ## Communication Style
 
