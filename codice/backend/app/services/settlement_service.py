@@ -167,7 +167,7 @@ class SettlementService:
             won = self._did_bet_win(bet, h2h_winner)
             actual_winner = h2h_winner
 
-        pnl = (bet.odds - 1) * float(bet.stake) if won else -float(bet.stake)
+        pnl = (float(bet.odds) - 1.0) * float(bet.stake) if won else -float(bet.stake)
         status = "won" if won else "lost"
 
         await self.db.execute(
