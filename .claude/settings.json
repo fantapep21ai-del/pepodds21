@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' && echo '📋 CONTEXT.md — Stato Progetto' && echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' && echo '' && head -40 CONTEXT.md && echo '' && echo '👉 Leggi il CONTEXT.md completo se serve: cat CONTEXT.md'",
+            "statusMessage": "Caricando CONTEXT del progetto..."
+          }
+        ]
+      }
+    ]
+  }
+}
