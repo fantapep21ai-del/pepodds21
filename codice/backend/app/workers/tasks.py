@@ -1776,10 +1776,9 @@ def fetch_complete_sport_data(self, sport: str | None = None):
         # Determine lookahead window: 20h for tutti gli sport (focused + evita intasamento)
         hours_lookahead = 20
 
-        # Step 1: Sync competizioni (se sport=None) per scoprire nuovi tornei
-        if not sport:
-            sync_result = _run(_sync_competitions_async())
-            logger.info("sync_competitions completed: %s", sync_result)
+        # Step 1: Sync competizioni SEMPRE per scoprire nuovi tornei (indipendentemente da sport)
+        sync_result = _run(_sync_competitions_async())
+        logger.info("sync_competitions completed: %s", sync_result)
 
         # Step 2: Fetch odds per competizioni attive dello sport
         odds_result = _run(fetch_all_odds_async(sport))
