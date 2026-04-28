@@ -801,6 +801,10 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             duration_s = (finished_at - started_at).total_seconds()
             total_opps = opportunities_found + props_found
 
+            # DEBUG: Log per capire quale path viene preso
+            logger.info("🔍 DEBUG: sport=%s, total_opps=%d, matches_with_opps=%d, matches_without_opps=%d",
+                        sport, total_opps, len(matches_with_opps), len(matches_without_opps))
+
             # Notifica Telegram con report dettagliato
             if sport:
                 from app.services.telegram_service import send_sport_analysis_report
