@@ -282,6 +282,84 @@ async def send_opportunity_alert(
         logger.warning("Telegram opportunity alert failed: %s", exc)
 
 
+async def send_sport_analysis_report(sport: str, matches_data: dict) -> None:
+    """
+    Report completo di analisi sportiva — elenca tutti i match analizzati.
+
+    Args:
+        sport: "calcio", "basket", "tennis"
+        matches_data: {
+            "matches_processed": int,
+            "matches_with_opps": [{"name": str, "opps": [...]}],
+            "matches_without_opps": [str, ...],
+            "player_props_found": int,
+            "duration_s": float
+        }
+    """
+    if _notifications_paused():
+        return
+
+    from telegram import Bot
+
+    sport_emoji = {"football": "⚽", "calcio": "⚽", "basketball": "🏀", "basket": "🏀", "tennis": "🎾"}.get(sport.lower(), "📊")
+    sport_label = {"football": "CALCIO", "calcio": "CALCIO", "basketball": "BASKET", "basket": "BASKET", "tennis": "TENNIS"}.get(sport.lower(), sport.upper())
+
+    matches_processed = matches_data.get("matches_processed", 0)
+    duration = matches_data.get("duration_s", 0)
+    matches_with_opps = matches_data.get("matches_with_opps", [])
+    matches_without_opps = matches_data.get("matches_without_opps", [])
+    player_props_found = matches_data.get("player_props_found", 0)
+
+    # Header
+    msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
+
+    # Opportunità trovate
+    if matches_with_opps:
+        msg += f"<b>✅ OPPORTUNITÀ TROVATE ({len(matches_with_opps)})</b>\n"
+        for match_info in matches_with_opps[:15]:  # Max 15 per non appesantire
+            match_name = match_info.get("name", "?")
+            opps = match_info.get("opps", [])
+            msg += f"\n<b>{match_name}</b>\n"
+            for opp in opps[:3]:  # Max 3 quote per match
+                tier_emoji = _TIER_EMOJI.get(opp.get("tier", "B"), "✅")
+                ev = opp.get("expected_value", 0)
+                outcome = opp.get("outcome", "")
+                odds = opp.get("best_odds", 0)
+                bookmaker = opp.get("bookmaker", "").replace("_", " ").title()
+                msg += f"  {tier_emoji} {outcome} @ {odds:.2f} ({ev:+.1%}) — {bookmaker}\n"
+        msg += f"\n"
+
+    # Player Props
+    if player_props_found > 0:
+        msg += f"<b>👤 PLAYER PROPS</b>\n  {player_props_found} opportunità su giocatori singoli\n\n"
+
+    # Match senza opportunità
+    total_without = len(matches_without_opps)
+    if total_without > 0:
+        msg += f"<b>⚫ NESSUNA OPPORTUNITÀ ({total_without})</b>\n"
+        for match_name in matches_without_opps[:10]:  # Max 10
+            msg += f"  {match_name} = 0 quote\n"
+        if total_without > 10:
+            msg += f"  ... e {total_without - 10} altri match\n"
+        msg += f"\n"
+
+    # Footer
+    msg += f"{_SEP}\n"
+    msg += f"<b>TOTALE:</b> {matches_processed} match analizzati\n"
+    msg += f"<b>TEMPO:</b> {duration:.2f}s\n"
+
+    try:
+        bot = Bot(token=settings.telegram_bot_token)
+        await bot.send_message(
+            chat_id=settings.telegram_chat_id,
+            text=msg,
+            parse_mode="HTML",
+        )
+        logger.info("Sport analysis report sent: %s", sport)
+    except Exception as exc:
+        logger.warning("Sport analysis report failed: %s", exc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sync: notifica quando l'utente agisce dal sito (non dal bot)
 # ─────────────────────────────────────────────────────────────────────────────

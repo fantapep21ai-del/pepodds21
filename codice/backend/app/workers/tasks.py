@@ -705,6 +705,7 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
     from sqlalchemy import select, and_
     from app.db.base import AsyncSessionLocal
     from app.db.models.match import Match, MatchOdds
+    from app.db.models.opportunity import BettingOpportunity
     from app.db.models.runs import PipelineRun
     from app.services.ingestion_service import IngestionService
 
@@ -748,9 +749,38 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             from app.agents.player_props_pipeline import analyse_player_props
             opportunities_found = 0
             props_found = 0
+            matches_with_opps = []
+            matches_without_opps = []
+
             for match in matches:
                 n = await analyse_match(match, db)
                 opportunities_found += n
+
+                # Raccogli opportunità create per questo match
+                opps_result = await db.execute(
+                    select(BettingOpportunity)
+                    .where(BettingOpportunity.match_id == match.id)
+                    .where(BettingOpportunity.status == "pending")
+                )
+                match_opps = opps_result.scalars().all()
+
+                if match_opps:
+                    opps_data = []
+                    for opp in match_opps:
+                        opps_data.append({
+                            "tier": opp.tier or "C",
+                            "outcome": opp.outcome or "",
+                            "best_odds": float(opp.best_odds) if opp.best_odds else 0.0,
+                            "expected_value": float(opp.expected_value) if opp.expected_value else 0.0,
+                            "bookmaker": opp.bookmaker or "",
+                        })
+                    matches_with_opps.append({
+                        "name": match.display_name(),
+                        "opps": opps_data,
+                    })
+                else:
+                    matches_without_opps.append(match.display_name())
+
                 # Player props: solo per basketball e calcio top tier
                 if match.sport in ("basketball", "football"):
                     p = await analyse_player_props(match, db)
@@ -771,21 +801,35 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             duration_s = (finished_at - started_at).total_seconds()
             total_opps = opportunities_found + props_found
 
-            # Notifica Telegram: se zero opportunità → NO BET, altrimenti summary
-            if total_opps == 0:
-                from app.services.telegram_service import send_no_bet_today
-                await send_no_bet_today(
-                    matches_analysed=len(matches),
-                    duration_s=duration_s,
+            # Notifica Telegram con report dettagliato
+            if sport:
+                from app.services.telegram_service import send_sport_analysis_report
+                await send_sport_analysis_report(
+                    sport=sport,
+                    matches_data={
+                        "matches_processed": len(matches),
+                        "matches_with_opps": matches_with_opps,
+                        "matches_without_opps": matches_without_opps,
+                        "player_props_found": props_found,
+                        "duration_s": duration_s,
+                    }
                 )
             else:
-                from app.services.telegram_service import send_pipeline_summary
-                await send_pipeline_summary(
-                    matches_processed=len(matches),
-                    opportunities_found=total_opps,
-                    bets_placed=scalate_created,
-                    duration_s=duration_s,
-                )
+                # Fallback per pipeline generale (senza sport specifico)
+                if total_opps == 0:
+                    from app.services.telegram_service import send_no_bet_today
+                    await send_no_bet_today(
+                        matches_analysed=len(matches),
+                        duration_s=duration_s,
+                    )
+                else:
+                    from app.services.telegram_service import send_pipeline_summary
+                    await send_pipeline_summary(
+                        matches_processed=len(matches),
+                        opportunities_found=total_opps,
+                        bets_placed=scalate_created,
+                        duration_s=duration_s,
+                    )
 
             return {
                 "matches_processed": len(matches),
