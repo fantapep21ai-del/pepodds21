@@ -193,13 +193,6 @@ class SettlementService:
         # Telegram notification
         await self._notify(bet, match, status, pnl)
 
-        # Se il bet è parte di una scalata, aggiorna lo step
-        if bet.scalata_id:
-            try:
-                await self._settle_scalata_step(bet.scalata_id, won, pnl)
-            except Exception as exc:
-                logger.warning("Scalata settlement failed for bet %s: %s", bet.id, exc)
-
         return True
 
     async def _get_match_scores(self, match: Match) -> tuple[int, int] | None:

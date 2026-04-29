@@ -93,36 +93,18 @@ async def get_results_breakdown(
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
 ):
-    """Resoconto separato: singole vs scalate."""
+    """Resoconto statistiche scommesse singole."""
     start_date = datetime.now(timezone.utc) - timedelta(days=days)
 
-    # Singole (bet senza scalata_id)
-    singole_result = await db.execute(
+    result = await db.execute(
         select(
             func.count(Bet.id),
             func.sum(Bet.stake),
             func.sum(Bet.pnl),
             func.count(Bet.id).filter(Bet.status == "won"),
-        ).where(
-            Bet.settled_at >= start_date,
-            Bet.scalata_id.is_(None),
-        )
+        ).where(Bet.settled_at >= start_date)
     )
-    s = singole_result.first()
-
-    # Scalate (bet con scalata_id)
-    scalate_result = await db.execute(
-        select(
-            func.count(Bet.id),
-            func.sum(Bet.stake),
-            func.sum(Bet.pnl),
-            func.count(Bet.id).filter(Bet.status == "won"),
-        ).where(
-            Bet.settled_at >= start_date,
-            Bet.scalata_id.isnot(None),
-        )
-    )
-    sc = scalate_result.first()
+    row = result.first()
 
     def _format(count, staked, pnl, wins):
         return {
@@ -134,8 +116,8 @@ async def get_results_breakdown(
         }
 
     return BreakdownOut(
-        singole=_format(s[0], s[1], s[2], s[3]),
-        scalate=_format(sc[0], sc[1], sc[2], sc[3]),
+        singole=_format(row[0], row[1], row[2], row[3]),
+        scalate=_format(0, 0.0, 0.0, 0),  # Empty since system is singole-only now
     )
 
 
