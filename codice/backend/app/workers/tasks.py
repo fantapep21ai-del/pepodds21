@@ -888,16 +888,16 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
 
 # ── Bet settlement ────────────────────────────────────────────────────────────
 
-@celery_app.task(name="app.workers.tasks.settle_finished_bets", bind=True, max_retries=2)
-def settle_finished_bets(self):
-    """Check finished matches and settle open bets."""
-    logger.info("Task settle_finished_bets started")
+@celery_app.task(name="app.workers.tasks.controlla", bind=True, max_retries=2)
+def controlla(self):
+    """CONTROLLA — Check finished matches and settle open bets."""
+    logger.info("Task CONTROLLA started")
     try:
         result = _run(_settle_bets_async())
-        logger.info("settle_finished_bets done: %s", result)
+        logger.info("CONTROLLA done: %s", result)
         return result
     except Exception as exc:
-        logger.error("settle_finished_bets failed: %s", exc)
+        logger.error("CONTROLLA failed: %s", exc)
         raise self.retry(exc=exc, countdown=180)
 
 

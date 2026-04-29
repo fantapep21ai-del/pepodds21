@@ -5,12 +5,9 @@ import { usePathname } from 'next/navigation';
 import { clsx } from 'clsx';
 
 const NAV = [
-  { href: '/dashboard',     label: 'Dashboard',    icon: '◼' },
+  { href: '/dashboard',     label: 'Dashboard',    icon: '📊' },
   { href: '/matches',       label: 'Partite',       icon: '⚽' },
   { href: '/opportunities', label: 'Opportunità',   icon: '🎯' },
-  { href: '/scalate',       label: 'Scalate',       icon: '🎰' },
-  { href: '/bets',          label: 'Scommesse',     icon: '📋' },
-  { href: '/analytics',     label: 'Analytics',     icon: '📈' },
   { href: '/settings',      label: 'Impostazioni',  icon: '⚙️' },
 ];
 

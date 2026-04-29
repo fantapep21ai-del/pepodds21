@@ -34,15 +34,9 @@ celery_app.conf.beat_schedule = {
     },
 
     # ── Settlement ogni 2 ore (scommesse finite) ──────────────────────────────
-    "settle-bets": {
-        "task": "app.workers.tasks.settle_finished_bets",
+    "controlla": {
+        "task": "app.workers.tasks.controlla",
         "schedule": crontab(minute=0, hour="*/2"),
-    },
-
-    # ── Settlement scalate ogni 2 ore (step avanzamento) ──────────────────────
-    "settle-scalata-steps": {
-        "task": "app.workers.tasks.settle_scalata_steps",
-        "schedule": crontab(minute=30, hour="*/2"),
     },
 
     # ── CLV update ogni 6 ore ─────────────────────────────────────────────────
