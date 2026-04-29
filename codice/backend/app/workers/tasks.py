@@ -775,11 +775,9 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             else:
                 matches = matches_raw
 
-            # Step 3: dispatch agent analysis for each match (game lines + player props)
+            # Step 3: dispatch agent analysis for each match
             from app.agents.pipeline import analyse_match
-            from app.agents.player_props_pipeline import analyse_player_props
             opportunities_found = 0
-            props_found = 0
             matches_with_opps = []
             matches_without_opps = []
             incomplete_analysis = []
@@ -830,25 +828,16 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                         "analysis_reason": match.analysis_reason,
                     })
 
-                # Player props: solo per basketball e calcio top tier
-                if match.sport in ("basketball", "football"):
-                    p = await analyse_player_props(match, db)
-                    props_found += p
-
-            # Step 4: detect and create scalate from candidates
-            scalate_created = await _detect_and_create_scalate(db)
-
             # Update pipeline record
             finished_at = datetime.now(timezone.utc)
             pipeline.status = "done"
             pipeline.matches_processed = len(matches)
-            pipeline.opportunities_found = opportunities_found + props_found
-            pipeline.bets_placed = scalate_created
+            pipeline.opportunities_found = opportunities_found
             pipeline.finished_at = finished_at
             await db.commit()
 
             duration_s = (finished_at - started_at).total_seconds()
-            total_opps = opportunities_found + props_found
+            total_opps = opportunities_found
 
             # DEBUG: Log per capire quale path viene preso
             logger.info("🔍 DEBUG: sport=%s, total_opps=%d, matches_with_opps=%d, matches_without_opps=%d",
@@ -880,15 +869,12 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                     await send_pipeline_summary(
                         matches_processed=len(matches),
                         opportunities_found=total_opps,
-                        bets_placed=scalate_created,
                         duration_s=duration_s,
                     )
 
             return {
                 "matches_processed": len(matches),
                 "opportunities_found": opportunities_found,
-                "player_props_found": props_found,
-                "scalate_created": scalate_created,
                 "duration_s": (finished_at - started_at).total_seconds(),
             }
 
@@ -898,100 +884,6 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             pipeline.finished_at = datetime.now(timezone.utc)
             await db.commit()
             raise
-
-
-# _build_combined_bets rimossa — la logica combinata è gestita da _detect_and_create_scalate
-
-
-async def _detect_and_create_scalate(db) -> int:
-    """
-    Cerca opportunità scalata candidate non ancora assegnate a una scalata.
-    Se trova >= 3 → crea una Scalata con quegli step ordinati per match_date.
-    Restituisce il numero di scalate create.
-    """
-    import math
-    from sqlalchemy import select, and_
-    from app.db.models.opportunity import BettingOpportunity
-    from app.db.models.match import Match
-    from app.db.models.scalata import Scalata, ScalataStep
-
-    # Prendi candidati scalata: bet_type='scalata', pending, scalata_id is null
-    result = await db.execute(
-        select(BettingOpportunity, Match.match_date, Match.home_team, Match.away_team)
-        .join(Match, Match.id == BettingOpportunity.match_id)
-        .where(
-            and_(
-                BettingOpportunity.bet_type == "scalata",
-                BettingOpportunity.status == "pending",
-                BettingOpportunity.scalata_id.is_(None),
-            )
-        )
-        .order_by(Match.match_date.asc())
-        .limit(10)
-    )
-    rows = result.all()
-
-    if len(rows) < 3:
-        return 0  # servono almeno 3 step per una scalata
-
-    # Prendine al massimo 5 (ideale 4–5 step con quote ~1.50)
-    selected = rows[:5]
-    n_steps = len(selected)
-
-    # Calcola potential_win con quota media
-    from app.config import settings as _cfg
-    start_amount = _cfg.scalata_start_amount  # configurabile via SCALATA_START_AMOUNT nel .env
-    amount = start_amount
-    for opp, _, _, _ in selected:
-        amount = round(amount * float(opp.best_odds), 2)
-    potential_win = round(amount, 2)
-
-    # Crea la Scalata
-    scalata = Scalata(
-        status="attiva",
-        total_steps=n_steps,
-        current_step=0,
-        start_amount=start_amount,
-        current_amount=start_amount,
-        potential_win=potential_win,
-        created_at=datetime.now(timezone.utc),
-        notes=f"Rilevata automaticamente dalla pipeline — {n_steps} step",
-    )
-    db.add(scalata)
-    await db.flush()
-
-    # Crea gli step e linka le opportunità
-    for i, (opp, match_date, home, away) in enumerate(selected, start=1):
-        step = ScalataStep(
-            scalata_id=scalata.id,
-            step_number=i,
-            opportunity_id=opp.id,
-            odds=float(opp.best_odds),
-            stake=0.0,  # sarà aggiornato quando l'utente conferma
-            status="attivo" if i == 1 else "in_attesa",
-            match_name=f"{home} vs {away}",
-            market=opp.market,
-            outcome=opp.outcome,
-            bookmaker=opp.bookmaker,
-            match_date=match_date,
-        )
-        db.add(step)
-
-        # Linka l'opportunità alla scalata
-        opp.scalata_id = scalata.id
-        opp.scalata_step = i
-
-    await db.commit()
-
-    # Notifica Telegram
-    try:
-        from app.services.telegram_service import send_scalata_alert
-        await send_scalata_alert(scalata, selected)
-    except Exception as e:
-        logger.warning("Telegram scalata alert failed: %s", e)
-
-    logger.info("Scalata creata: %d step, potential_win=€%.2f", n_steps, potential_win)
-    return 1
 
 
 # ── Bet settlement ────────────────────────────────────────────────────────────
@@ -1587,227 +1479,6 @@ def _clv_recommendation(avg_clv: float, win_rate_clv: float) -> str:
         return "CLV leggermente negativo — potresti stare pagando il vig. Considera di alzare la soglia EV al 5%."
     else:
         return "CLV chiaramente negativo. Alza la soglia EV al 6%+ e controlla i bookmaker in rosso."
-
-
-# ── Scalata Multi-Sport ───────────────────────────────────────────────────────
-
-@celery_app.task(name="app.workers.tasks.run_nba_scalata", bind=True, max_retries=1)
-def run_nba_scalata(self):
-    """
-    Trova step con valore intrinseco (NBA/calcio/tennis) e costruisce scalate.
-    Gira dopo il fetch odds (10:00 e 19:00 UTC) per avere dati freschi.
-    """
-    logger.info("Task run_nba_scalata started")
-    try:
-        result = _run(_run_scalata_async())
-        logger.info("Task run_nba_scalata done: %s", result)
-        return result
-    except Exception as exc:
-        logger.error("run_nba_scalata failed: %s", exc, exc_info=True)
-        raise self.retry(exc=exc, countdown=300)
-
-
-async def _run_scalata_async() -> dict:
-    from app.db.base import AsyncSessionLocal
-    from app.services.prop_scalata_service import PropScalataService
-    from app.services.betting_advisor import BettingAdvisor, format_decision_telegram
-    from app.services.telegram_service import TelegramService
-
-    async with AsyncSessionLocal() as db:
-        svc = PropScalataService()
-        steps = await svc.find_all_value_steps(db)
-
-        if not steps:
-            logger.info("Scalata: nessuno step con valore trovato")
-            return {"steps": 0, "scalate": 0}
-
-        # Converti ScalataStep → candidate dict per BettingAdvisor
-        candidates = []
-        for s in steps:
-            ev = s.confidence * s.best_odds - 1.0
-            candidates.append({
-                "description":    s.description,
-                "match_name":     s.match_name,
-                "sport":          s.sport,
-                "direction":      s.direction,
-                "best_odds":      s.best_odds,
-                "best_bookmaker": s.best_bookmaker,
-                "confidence":     s.confidence,
-                "ev":             ev,
-                "reasoning":      s.reasoning,
-            })
-
-        advisor = BettingAdvisor()
-        decision = advisor.decide(candidates)
-
-        if decision.bet_type == "skip":
-            logger.info("BettingAdvisor: SKIP — %s", decision.reasoning)
-            return {"steps": len(steps), "scalate": 0, "decision": "skip"}
-
-        msg = format_decision_telegram(decision)
-        telegram = TelegramService()
-        try:
-            await telegram.send_message(msg)
-            sent = 1
-        except Exception as exc:
-            logger.warning("Telegram decision alert failed: %s", exc)
-            sent = 0
-
-        return {
-            "steps": len(steps),
-            "decision": decision.bet_type,
-            "combined_odds": decision.combined_odds,
-            "ev": decision.expected_value,
-            "sent": sent,
-        }
-
-
-# ── Scalata step settlement ───────────────────────────────────────────────────
-
-@celery_app.task(name="app.workers.tasks.settle_scalata_steps")
-def settle_scalata_steps():
-    """
-    Ogni 2 ore: verifica gli step di scalate attive la cui match_date è passata.
-    Se il match è finito → liquida lo step e avanza o chiude la scalata.
-    """
-    _run(_settle_scalata_steps_async())
-
-
-async def _settle_scalata_steps_async() -> dict:
-    from datetime import timedelta
-    from sqlalchemy import select, and_, update
-    from sqlalchemy.orm import selectinload
-    from app.db.base import AsyncSessionLocal
-    from app.db.models.scalata import Scalata, ScalataStep
-    from app.db.models.opportunity import BettingOpportunity
-    from app.db.models.match import Match
-    from app.services.settlement_service import SettlementService
-    from app.db.models.bet import Bet
-
-    settled_steps = 0
-    scalate_closed = 0
-
-    async with AsyncSessionLocal() as db:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
-
-        # Step attivi la cui partita dovrebbe essere finita
-        result = await db.execute(
-            select(ScalataStep)
-            .where(
-                and_(
-                    ScalataStep.status == "attivo",
-                    ScalataStep.match_date <= cutoff,
-                )
-            )
-            .options(selectinload(ScalataStep.scalata))
-        )
-        steps_to_settle = result.scalars().all()
-
-        for step in steps_to_settle:
-            # Se lo step ha una bet collegata, liquidala via SettlementService
-            if step.bet_id:
-                bet_result = await db.execute(
-                    select(Bet).where(Bet.id == step.bet_id)
-                )
-                bet = bet_result.scalar_one_or_none()
-                if bet and bet.status == "open":
-                    svc = SettlementService(db)
-                    ok = await svc.settle_bet(bet)
-                    if not ok:
-                        logger.info("Scalata step %s: score non ancora disponibile", step.id)
-                        continue
-                    settled_steps += 1
-                    won = bet.status == "won"
-                else:
-                    # Bet già liquidata — leggi risultato
-                    won = bet.status == "won" if bet else False
-
-            else:
-                # Nessuna bet collegata: step senza tracking formale → skip
-                logger.warning("ScalataStep %s senza bet_id — impossibile liquidare", step.id)
-                continue
-
-            scalata = step.scalata
-            if not scalata:
-                continue
-
-            if won:
-                step.status = "vinto"
-                step.settled_at = datetime.now(timezone.utc)
-
-                # Controlla se è l'ultimo step
-                if step.step_number >= scalata.total_steps:
-                    # Scalata completata con successo
-                    scalata.status = "vinta"
-                    scalata.completed_at = datetime.now(timezone.utc)
-                    scalata.total_pnl = float(scalata.potential_win) - float(scalata.start_amount)
-                    scalate_closed += 1
-                    logger.info(
-                        "Scalata %s VINTA — P&L: +€%.2f",
-                        scalata.id, scalata.total_pnl,
-                    )
-                    try:
-                        from app.services.telegram_service import _send
-                        await _send(
-                            f"✅ <b>SCALATA VINTA!</b>\n"
-                            f"Tutti {scalata.total_steps} step completati.\n"
-                            f"P&L: <b>+€{scalata.total_pnl:.2f}</b>"
-                        )
-                    except Exception:
-                        pass
-                else:
-                    # Avanza al prossimo step
-                    next_step_num = step.step_number + 1
-                    next_result = await db.execute(
-                        select(ScalataStep).where(
-                            and_(
-                                ScalataStep.scalata_id == scalata.id,
-                                ScalataStep.step_number == next_step_num,
-                            )
-                        )
-                    )
-                    next_step = next_result.scalar_one_or_none()
-                    if next_step:
-                        next_step.status = "attivo"
-                        new_stake = float(step.stake) * float(step.odds)
-                        next_step.stake = round(new_stake, 2)
-                        scalata.current_step = next_step_num
-                        scalata.current_amount = round(new_stake, 2)
-                        logger.info(
-                            "Scalata %s avanza a step %d — stake: €%.2f",
-                            scalata.id, next_step_num, new_stake,
-                        )
-                        try:
-                            from app.services.telegram_service import _send
-                            await _send(
-                                f"Step {step.step_number}/{scalata.total_steps} vinto!\n"
-                                f"Prossimo step: {next_step.match_name}\n"
-                                f"Stake: <b>€{new_stake:.2f}</b>"
-                            )
-                        except Exception:
-                            pass
-            else:
-                # Step perso → scalata chiusa
-                step.status = "perso"
-                step.settled_at = datetime.now(timezone.utc)
-                scalata.status = "persa"
-                scalata.completed_at = datetime.now(timezone.utc)
-                scalata.total_pnl = -float(scalata.start_amount)
-                scalate_closed += 1
-                logger.info("Scalata %s PERSA a step %d", scalata.id, step.step_number)
-                try:
-                    from app.services.telegram_service import _send
-                    await _send(
-                        f"❌ <b>Scalata persa</b> allo step {step.step_number}/{scalata.total_steps}\n"
-                        f"{step.match_name}\n"
-                        f"P&L: <b>-€{scalata.start_amount:.2f}</b>"
-                    )
-                except Exception:
-                    pass
-
-        await db.commit()
-
-    return {"steps_settled": settled_steps, "scalate_closed": scalate_closed}
 
 
 # ── Fetch Complete Sport Data (On-Demand via Telegram) ───────────────────────

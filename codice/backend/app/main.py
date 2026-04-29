@@ -14,7 +14,6 @@ from app.core.security import hash_password
 from app.api import auth
 from app.api.routers import matches, opportunities, bets, competitions
 from app.api.routers import settings as settings_router
-from app.api.routers import scalate
 from app.api.routers import telegram_webhook
 from app.api.routers import intelligence
 from app.api.routers import analytics
@@ -86,7 +85,6 @@ app.include_router(matches.router)
 app.include_router(opportunities.router)
 app.include_router(bets.router)
 app.include_router(settings_router.router)
-app.include_router(scalate.router)
 # app.include_router(results.router)  # module does not exist
 app.include_router(telegram_webhook.router)
 app.include_router(intelligence.router)

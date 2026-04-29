@@ -480,64 +480,6 @@ async def notify_opportunity_modified(opp: BettingOpportunity, match_name: str) 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scalata
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def send_scalata_alert(scalata, steps: list) -> None:
-    """Notifica quando il sistema rileva una nuova scalata."""
-    lines = [
-        f"🎰 <b>Nuova Scalata — {scalata.total_steps} Step</b>",
-        _SEP,
-        f"Partenza: €{float(scalata.start_amount):.0f}",
-        f"Vincita potenziale: <b>€{float(scalata.potential_win):.0f}</b>",
-        "",
-    ]
-    for i, (opp, match_date, home, away) in enumerate(steps, 1):
-        date_str = match_date.strftime("%d/%m %H:%M") if match_date else "?"
-        lines.append(
-            f"Step {i} · <b>{home} vs {away}</b>\n"
-            f"   {opp.outcome} @ {opp.best_odds:.2f} ({date_str})"
-        )
-    lines.append("\n→ Conferma su PEPODDS21 → Scalate")
-    try:
-        await _send("\n".join(lines))
-    except Exception as exc:
-        logger.warning("Telegram scalata alert failed: %s", exc)
-
-
-async def send_scalata_step_result(scalata, step, won: bool) -> None:
-    """Notifica risultato di uno step di scalata."""
-    if won:
-        if scalata.current_step >= scalata.total_steps:
-            msg = (
-                f"🏆 <b>Scalata completata — Vinta!</b>\n"
-                f"{_SEP}\n"
-                f"Tutti i {scalata.total_steps} step superati.\n"
-                f"Profitto netto: <b>+€{float(scalata.total_pnl or 0):.2f}</b>"
-            )
-        else:
-            next_stake = float(step.stake) * float(step.odds)
-            msg = (
-                f"✅ <b>Step {step.step_number}/{scalata.total_steps} vinto</b>\n"
-                f"{_SEP}\n"
-                f"{step.match_name}\n"
-                f"Prossimo step: stake <b>€{next_stake:.0f}</b>\n"
-                f"→ Conferma su PEPODDS21 → Scalate"
-            )
-    else:
-        msg = (
-            f"❌ <b>Scalata persa — Step {step.step_number}/{scalata.total_steps}</b>\n"
-            f"{_SEP}\n"
-            f"{step.match_name}\n"
-            f"Perso: -€{float(step.stake):.0f}"
-        )
-    try:
-        await _send(msg)
-    except Exception as exc:
-        logger.warning("Telegram scalata step result failed: %s", exc)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Settlement
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -584,7 +526,6 @@ async def send_no_bet_today(matches_analysed: int, duration_s: float) -> None:
 async def send_pipeline_summary(
     matches_processed: int,
     opportunities_found: int,
-    bets_placed: int,
     duration_s: float,
 ) -> None:
     msg = (
@@ -592,7 +533,6 @@ async def send_pipeline_summary(
         f"{_SEP}\n"
         f"Partite analizzate: {matches_processed}\n"
         f"Opportunità trovate: <b>{opportunities_found}</b>\n"
-        f"Scalate rilevate: {bets_placed}\n"
         f"Durata: {duration_s:.1f}s\n\n"
         f"<i>Usa /opportunita per vedere e gestire le quote trovate.</i>"
     )
