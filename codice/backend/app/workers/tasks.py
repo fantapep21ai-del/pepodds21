@@ -40,6 +40,7 @@ async def _sync_competitions_async() -> dict:
     from app.db.base import AsyncSessionLocal
     from app.db.models.match import Competition
     from app.services.odds_fetcher import OddsAPIClient
+    from app.services.ingestion_service import SPORT_KEY_MAPPING
 
     client = OddsAPIClient()
     try:
@@ -47,6 +48,11 @@ async def _sync_competitions_async() -> dict:
     except Exception as exc:
         logger.error("sync_competitions: list_sports failed: %s", exc)
         return {"added": 0, "error": str(exc)}
+
+    # Costruisci set di sport_key autorizzati da SPORT_KEY_MAPPING
+    authorized_keys = set()
+    for sport, mapping in SPORT_KEY_MAPPING.items():
+        authorized_keys.update(mapping.values())
 
     added = 0
     async with AsyncSessionLocal() as db:
@@ -57,6 +63,10 @@ async def _sync_competitions_async() -> dict:
         for s in sports:
             key = s.get("key", "")
             title = s.get("title", key)
+
+            # Salta sport non autorizzati
+            if key not in authorized_keys:
+                continue
 
             # Classifica sport
             if "tennis" in key:
@@ -101,14 +111,17 @@ async def _sync_competitions_async() -> dict:
                 tier, weight = "B", 0.6
                 name = title
 
-            await db.execute(
-                pg_insert(Competition)
-                .values(odds_api_key=key, name=name, sport=sport, tier=tier, weight=weight)
-                .on_conflict_do_nothing(index_elements=["odds_api_key"])
-            )
-            existing_keys.add(key)
-            added += 1
-            logger.info("Nuova competizione aggiunta: %s (%s)", name, key)
+            # Use simple INSERT instead of pg_insert to avoid constraint issues
+            try:
+                await db.execute(
+                    "INSERT INTO competitions (id, name, sport, tier, weight, odds_api_key) VALUES (gen_random_uuid(), %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    [name, sport, tier, weight, key]
+                )
+                existing_keys.add(key)
+                added += 1
+                logger.info("Nuova competizione aggiunta: %s (%s)", name, key)
+            except Exception as e:
+                logger.warning("Skipped competition %s: %s", key, e)
 
         if added:
             await db.commit()
