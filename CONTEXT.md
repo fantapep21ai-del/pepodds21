@@ -29,43 +29,60 @@ Ti dà la topologia completa del sistema senza esplorare il codice.
 ```
 competitions        id, name, sport, tier, weight, external_id, odds_api_key
 matches             id, competition_id, home_team, away_team, player_a, player_b,
-                    match_date, sport, status, external_id, raw_stats (JSONB)
-match_odds          id, match_id, bookmaker, market, outcome, odds, fetched_at
+                    match_date, sport, status, external_id, raw_stats (JSONB),
+                    analysis_status, analysis_reason
+match_odds          id, match_id, bookmaker, market, outcome, odds, fetched_at, is_live
 betting_opportunities  id, match_id, market, outcome, bookmaker, best_odds,
                        model_probability, consensus_votes (JSONB), uncertainty_score,
                        expected_value, tier (S/A/B/C), edge, bet_type, confidence_level,
-                       scalata_id, composite_bet_id, reference_source, status,
-                       expires_at, uncertainty_blocked
-bets                id, opportunity_id, stake, actual_odds, status, result, profit_loss
-composite_bets      id, tipo (doppia/multipla), combined_odds, status
-scalate             id, nome, stato, step_corrente, quota_totale
-agent_runs          id, match_id, agent_name, status, output_data (JSONB), tokens_used
-bankroll            id, balance, total_staked, total_profit
+                       reference_source, status, expires_at, uncertainty_blocked,
+                       rejection_reason
+bets                id, opportunity_id, bookmaker, market, outcome, odds, stake,
+                    placed_at, status, result, pnl, settled_at, closing_odds, clv,
+                    actual_odds, notes
+agent_votes         id, match_id, agent_name, prediction, confidence, output_data (JSONB)
+agent_scores        id, agent_name, brier_score, accuracy, predictions_count
 users               id, email, hashed_password, is_active, is_admin
 players             NBA player props
 news                notizie partite
 context             SystemHealth
-runs                log esecuzioni pipeline
+pipeline_runs       id, sport, started_at, finished_at, status, matches_processed,
+                    opportunities_found
 ```
+
+**DELETED TABLES (2026-04):**
+- `bankroll` — User now decides stake per bet
+- `composite_bets` — Only singole (no multi-leg)
+- `scalate` — No scalata/accumulator strategy
 
 ---
 
 ## Pipeline AI (flusso principale)
 
+**Trigger:** User sends `/ricerca_calcio`, `/ricerca_nba`, or `/ricerca_tennis` on Telegram
+
 ```
-1. fetch_all_odds()        → scarica quote da The Odds API (2x/giorno)
-2. fetch_upcoming_stats()  → scarica stats, ELO, infortuni, meteo
-3. run_daily_pipeline()    → per ogni match:
-   a. compute_no_vig()     → probabilità vere da Pinnacle (matematica pura)
-   b. find_value_opportunities() → EV > 3% vs bookmaker soft
-   c. Tutti gli agenti in parallelo (condizionali ai dati disponibili):
-        Stats, Odds, Form, H2H, Injury, News, Weather → agent_signal 0-1
-        UncertaintyAgent → gate qualitativo (blocca se score ≥ 0.70)
-      Se agent_signal < 0.30 con ≥2 agenti → blocca (forte disaccordo)
-   d. classify_tier()      → S/A/B/C + bet_type
-   e. compute_reliability() → affidabilità 0-100%
-      modulata da: EV × uncertainty × bookmaker_agreement × ELO × timing × agent_signal
-   f. save BettingOpportunity + send Telegram alert
+1. Store command_timestamp in Redis
+2. fetch_complete_sport_data()   → scarica quote + stats per sport (18h from command)
+3. run_daily_pipeline()          → per ogni match nel timeframe:
+   a. Load matches with 18h window (from command_timestamp to command_timestamp + 18h)
+   b. Filter by allowed leagues (sport-specific)
+   c. Per ogni match:
+      i.   compute_no_vig()        → probabilità vere da Pinnacle (sharp odds)
+      ii.  find_value_opportunities() → EV usando threshold dinamico:
+           - Odds 1.4-3.0: min EV = 3.5%
+           - Odds > 3.0: min EV = 8.0%
+           - Odds < 1.4: EXCLUDED
+      iii. Tutti gli agenti in parallelo (if data available):
+           Stats, Odds, Form, H2H, Injury, News, Weather → agent_signal 0-1
+           UncertaintyAgent → gate qualitativo (blocca se score ≥ 0.70)
+      iv.  classify_tier()      → S/A/B/C (quality tiers)
+      v.   compute_reliability() → affidabilità per consensus
+   d. Collect ALL qualifying singole per match
+   e. Send Telegram report showing all matches with analysis status + all singole
+4. User uses /opportunita to accept/reject singole + select stake
+5. System creates Bet records with status="open"
+6. Automatic settlement every 2h via controlla task
 ```
 
 ---
@@ -75,21 +92,21 @@ runs                log esecuzioni pipeline
 ### On-Demand (Telegram Triggered)
 | Task | Comando | Finestra | Cosa fa |
 |------|---------|----------|---------|
-| `fetch_complete_sport_data` | `/ricerca*` | **20h** | Fetch odds + stats per sport |
-| `run_daily_pipeline` | `/ricerca*` | **20h** | AI analysis + alert Telegram |
+| `fetch_complete_sport_data` | `/ricerca_calcio` | **18h from command** | Fetch odds + stats |
+| `run_daily_pipeline` | (auto-triggered) | **18h from command** | AI analysis + alert |
 
-**Nota:** Tutte le ricerche sport-specific (`/ricerca_calcio`, `/ricerca_nba`, `/ricerca_tennis`, `/ricerca`) usano finestra di **20 ore** per evitare intasamento e mantener sistema focused.
+**Nota:** Solo sport-specific: `/ricerca_calcio`, `/ricerca_nba`, `/ricerca_tennis`  
+Finestra è **relativa al comando** (non da server boot): NOW() to NOW() + 18h dal momento dell'utente
 
 ### Automated Scheduled (Celery Beat)
 | Task | Frequenza | Cosa fa |
 |------|-----------|---------|
-| `sync_competitions` | giornaliero | aggiorna lista competizioni |
-| `settle_finished_bets` | ogni ora | registra risultati scommesse |
-| `run_health_check` | ogni 30min | stato sistema |
-| `update_clv` | giornaliero | aggiorna CLV per bookmaker |
-| `expire_waiting_opportunities` | ogni ora | scade opportunità vecchie |
-| `monitor_odds_movement` | ogni 2h | monitora movimenti quote |
-| `calibrate_clv` | settimanale | calibra blacklist bookmaker |
+| `controlla` | ogni 2h | Settle bets completati (match finiti) |
+| `sync_competitions` | giornaliero | Aggiorna lista competizioni + sync The Odds API |
+| `run_health_check` | ogni 30min | Verifica stato Redis + PostgreSQL |
+| `update_clv` | giornaliero | Calcola CLV per scommesse liquidate |
+| `expire_waiting_opportunities` | ogni ora | Scade opportunità old (match già iniziato) |
+| `monitor_uncertainty` | ogni 3h | Monitora agenti incompleti |
 
 ---
 
@@ -100,14 +117,17 @@ runs                log esecuzioni pipeline
 | auth | `/api/auth` | login, JWT |
 | matches | `/api/matches` | lista partite, quote |
 | opportunities | `/api/opportunities` | value bet trovate |
-| bets | `/api/bets` | scommesse piazzate |
+| bets | `/api/bets` | scommesse piazzate (status, P&L) |
 | competitions | `/api/competitions` | leghe/competizioni |
-| settings | `/api/settings` | configurazione sistema |
-| scalate | `/api/scalate` | gestione scalate |
+| results | `/api/results` | settlement, results match |
 | telegram_webhook | `/api/telegram` | comandi bot Telegram |
 | intelligence | `/api/intelligence` | agenti AI on-demand |
-| analytics | `/api/analytics` | statistiche e report |
-| bankroll | `/api/bankroll` | gestione bankroll |
+| analytics | `/api/analytics` | statistiche (P&L, ROI, CLV) |
+
+**DELETED ROUTERS (2026-04):**
+- `/api/scalate` — No multi-leg strategy
+- `/api/bankroll` — User decides stake per bet
+- `/api/settings` (partially) — No bankroll config
 
 ---
 
@@ -167,36 +187,48 @@ modula l'affidabilità. Se agent_signal < 0.30 con ≥2 agenti → opportunità 
 
 ---
 
-## Stato Attuale (2026-04-27 07:40 UTC)
+## Stato Attuale (2026-04-30 09:15 UTC)
 
-**✅ DEPLOY COMPLETATO — Sistema Live**
+**✅ SINGLE VALUE BET FINDER IMPLEMENTATO**
 
-**Backend & Architettura:**
-- ✅ Architettura on-demand completamente implementata
-- ✅ Zero automatic Celery Beat schedules (fetch solo via Telegram)
-- ✅ Sport-specific commands: /ricerca_calcio (35/mese), /ricerca_nba (35/mese), /ricerca_tennis (35/mese)
-- ✅ Player props abilitati per football e basketball
-- ✅ NTP sync configurato (previene clock drift)
-- ✅ API quota sotto controllo (~1200 req/mese vs 2000 budget, 40% margine)
+**Phase Completate (2026-04):**
+- ✅ Phase 1: Removed bankroll + Kelly parameters
+- ✅ Phase 2: Removed scalata + multi-leg architecture
+- ✅ Phase 3: Dynamic EV thresholds (3.5% for 1.4-3.0, 8% for >3.0)
+- ✅ Phase 4: Simplified to sport-specific commands only
+- ✅ Phase 5: Show ALL qualifying singole per match (not just 1 best)
+- ✅ Phase 6: Relative timeframe (18h from command, not server boot)
 
-**Telegram Bot UI (2026-04-27):**
-- ✅ Keyboard con tasti pronti per comandi (/help → mostra pulsanti)
-- ✅ Comando /pulisci aggiunto (per chat cleanup manuale)
-- ✅ Interfaccia minimale senza separatori
-- ✅ Logging dettagliato nei task di ricerca (diagnostica)
-- ✅ Bot commands registrati: 13 comandi
+**Architecture Changes:**
+- ✅ /ricerca (general) → DELETED
+- ✅ Only /ricerca_calcio, /ricerca_nba, /ricerca_tennis remain
+- ✅ NBA Playoffs support added (until 2026-06-30)
+- ✅ Dynamic EV gating: exclude odds < 1.4, apply thresholds per quote range
+- ✅ Report now shows: all matches analyzed + all singole per match
+- ✅ Settlement: automatic via controlla task (every 2h)
 
-**Deployment:**
-- ✅ Live su Hetzner 204.168.227.86 (Ubuntu 22.04, CX23)
-- ✅ Docker Compose con tutti i servizi (backend, worker, beat, redis, postgres, frontend)
-- ✅ Health check: tutti i servizi operativi
-- ✅ File inutili eliminati (test, script vecchi, doc obsoleta)
-- ✅ Test webhook /ricerca_calcio eseguito con successo
-- ✅ Celery worker elaborando task
-- ✅ No 429 rate limit errors
+**Telegram Bot Commands:**
+- ✅ /ricerca_calcio — Football analysis
+- ✅ /ricerca_nba — Basketball + Playoffs
+- ✅ /ricerca_tennis — Tennis Grand Slams + Masters 1000
+- ✅ /opportunita — Accept/reject singole with stake selection
+- ✅ /bilancio — Show P&L, ROI, win rate, CLV
+- ✅ /stats — Show pipeline metrics
+- ✅ /oggi — Today's matches
+- ✅ /attesa — In-progress opportunities
+- ✅ /help — Command list with buttons
 
-**Prossimi Step:**
-- ✓ Test operazionale /ricerca_calcio completato
+**Infrastructure Ready:**
+- ✅ User acceptance/rejection interface (/opportunita)
+- ✅ Stake selection (€5, €10, €20, €30, €50, €100+)
+- ✅ Automatic settlement every 2h (controlla task)
+- ✅ P&L tracking + statistics reporting (/bilancio)
+- ✅ CLV monitoring for edge validation
+
+**Deferred Decisions (user input needed):**
+- ❓ Bookmaker selection strategy (min count, blacklist criteria)
+- ❓ Player props integration (same pipeline for giocatori singoli?)
+- ❓ Settlement: confirm automatic 2h schedule is preferred
 - ✓ Sistema in produzione e monitorando
 - ⏳ Verificare alert Telegram per nuove opportunità (si attendono risultati)
 - ⏳ Monitorare API quota settimanale (attualmente 1200/2000 req)
