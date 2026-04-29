@@ -790,8 +790,16 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         logger.info("⏳ Attendendo 60s per completamento fetch...")
         await asyncio.sleep(60)  # Attendi il completamento fetch (odds + stats)
         logger.info("📦 Accodando task run_daily_pipeline(sport=%s)", sport)
-        task2 = run_daily_pipeline.delay(sport=sport)
+        task2 = run_daily_pipeline.delay()
         logger.info("✅ Task accodato: %s", task2.id)
+
+        # Salva il sport in Redis con il task ID come chiave (bypass Celery params)
+        r = aioredis.from_url(_cfg.redis_url_with_auth, decode_responses=True)
+        async with r:
+            sport_value = sport or "all"
+            await r.setex(f"celery:sport:{task2.id}", 3600, sport_value)
+            logger.info("💾 Sport salvato in Redis: celery:sport:%s = %s", task2.id, sport_value)
+
         await _send(chat_id, "✅ Step 2/3: Analisi AI avviata.\n\n🎯 Risultati in arrivo a breve...")
 
     except Exception as exc:

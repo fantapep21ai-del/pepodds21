@@ -676,12 +676,9 @@ async def _fetch_all_stats_async() -> int:
 # ── Full pipeline ─────────────────────────────────────────────────────────────
 
 @celery_app.task(name="app.workers.tasks.run_daily_pipeline", bind=True, max_retries=1)
-def run_daily_pipeline(self, sport: str | None = None):
+def run_daily_pipeline(self):
     """
     Full analysis pipeline — analizza i match arricchiti e genera opportunità.
-
-    Args:
-        sport: "football", "basketball", "tennis", o None per tutti gli sport.
 
     Pipeline:
     1. Seleziona match nelle prossime 48h (filtrato per sport se specificato)
@@ -690,6 +687,20 @@ def run_daily_pipeline(self, sport: str | None = None):
     4. Risk engine → dimensiona scommesse
     5. Telegram notification
     """
+    import redis
+
+    # Leggi il sport da Redis (salvato in telegram_webhook.py)
+    task_id = self.request.id
+    sport = None
+    try:
+        r = redis.Redis.from_url(settings.redis_url_with_auth, decode_responses=True)
+        sport_value = r.get(f"celery:sport:{task_id}")
+        sport = sport_value if (sport_value and sport_value != "all") else None
+        logger.info("🔥 run_daily_pipeline ENTRY: task_id=%s, sport_value=%r, sport=%r (from Redis)", task_id, sport_value, sport)
+    except Exception as exc:
+        logger.warning("Failed to read sport from Redis: %s", exc)
+        sport = None
+
     logger.info("Task run_daily_pipeline started (sport=%s)", sport or "all")
     try:
         result = _run(_run_daily_pipeline_async(sport=sport))
@@ -708,6 +719,8 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
     from app.db.models.opportunity import BettingOpportunity
     from app.db.models.runs import PipelineRun
     from app.services.ingestion_service import IngestionService
+
+    logger.info("🔥 _run_daily_pipeline_async ENTRY: sport=%r (type=%s, bool=%s)", sport, type(sport).__name__, bool(sport))
 
     started_at = datetime.now(timezone.utc)
     pipeline_run_id = None
