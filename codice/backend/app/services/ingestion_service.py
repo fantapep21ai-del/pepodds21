@@ -94,6 +94,43 @@ def normalize_league_name(raw_name: str, sport: str) -> str | None:
     return None
 
 
+# ────────────────────────────────────────────────────────────────────────────────
+# SPORT KEY MAPPING — The Odds API endpoint mapping per competition
+# ────────────────────────────────────────────────────────────────────────────────
+
+SPORT_KEY_MAPPING = {
+    "football": {
+        "Serie A": "soccer_serie_a",
+        "Bundesliga": "soccer_germany_bundesliga",
+        "Champions League": "soccer_uefa_champs_league",
+        "Europa League": "soccer_uefa_europa_league",
+        "Premier League": "soccer_epl",
+        "La Liga": "soccer_spain_la_liga",
+        "Ligue 1": "soccer_france_ligue_one",
+    },
+    "basketball": {
+        "NBA": "basketball_nba",
+    },
+    "tennis": {
+        # Tennis uses ATP/WTA splits, not tournament-specific keys in The Odds API
+        "Australian Open": "tennis_atp",
+        "French Open": "tennis_atp",
+        "Wimbledon": "tennis_atp",
+        "US Open": "tennis_atp",
+        "Indian Wells": "tennis_atp",
+        "Miami": "tennis_atp",
+        "Monte Carlo": "tennis_atp",
+        "Rome": "tennis_atp",
+        "Madrid": "tennis_atp",
+        "Canada": "tennis_atp",
+        "Cincinnati": "tennis_atp",
+        "Shanghai": "tennis_atp",
+        "Paris": "tennis_atp",
+        "ATP 1000": "tennis_atp",
+    }
+}
+
+
 def is_league_allowed(league_name: str, sport: str) -> bool:
     """
     Check if a league/tournament is allowed for a specific sport.
@@ -105,6 +142,16 @@ def is_league_allowed(league_name: str, sport: str) -> bool:
     allowed_leagues = filter_config.get("leagues", []) + filter_config.get("tournaments", [])
 
     return league_name in allowed_leagues
+
+
+def get_sport_key_for_competition(league_name: str, sport: str) -> str | None:
+    """
+    Get The Odds API sport_key for a given competition.
+    Returns None if no mapping exists.
+    """
+    if sport not in SPORT_KEY_MAPPING:
+        return None
+    return SPORT_KEY_MAPPING[sport].get(league_name)
 
 
 class IngestionService:
@@ -313,6 +360,24 @@ class IngestionService:
         counts: dict[str, int] = {}
         for comp in to_fetch:
             try:
+                # Get canonical league name and sport_key
+                canonical_league = normalize_league_name(comp.name, comp.sport)
+                sport_key = get_sport_key_for_competition(
+                    canonical_league or comp.name, comp.sport
+                )
+
+                if not sport_key:
+                    logger.warning(
+                        "No sport_key mapping for %s (sport=%s) — skipping",
+                        comp.name, comp.sport
+                    )
+                    counts[comp.name] = -1
+                    continue
+
+                # Temporarily set odds_api_key if not already set
+                if not comp.odds_api_key:
+                    comp.odds_api_key = sport_key
+
                 counts[comp.name] = await self.ingest_odds_for_competition(comp)
             except Exception as exc:
                 logger.error("Odds ingestion failed for %s: %s", comp.name, exc)

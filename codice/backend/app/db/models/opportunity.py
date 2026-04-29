@@ -33,12 +33,8 @@ class BettingOpportunity(Base):
     # Tier system (S/A/B/C) + edge score
     tier: Mapped[str] = mapped_column(String(5), default="C")              # S | A | B | C
     edge: Mapped[Optional[float]] = mapped_column(Numeric(8, 6))          # EV * confidence
-    bet_type: Mapped[str] = mapped_column(String(30), default="singola")  # singola | scalata | doppia | multipla
+    bet_type: Mapped[str] = mapped_column(String(30), default="singola")  # singola only
     confidence_level: Mapped[str] = mapped_column(String(20), default="normale")  # alta | normale | bassa
-
-    # Scalata linkage
-    scalata_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("scalate.id"), nullable=True)
-    scalata_step: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Composite bet linkage (double/multiple)
     composite_bet_id: Mapped[Optional[uuid.UUID]] = mapped_column(

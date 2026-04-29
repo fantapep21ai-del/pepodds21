@@ -43,11 +43,6 @@ class Bet(Base):
         UUID(as_uuid=True), ForeignKey("composite_bets.id"), nullable=True
     )
 
-    # Scalata integration — link a scalata se bet è uno step di cascata
-    scalata_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("scalate.id"), nullable=True
-    )
-
     # Actual odds confirmed at placement (può differire da best_odds se cambiano velocemente)
     actual_odds: Mapped[Optional[float]] = mapped_column(Numeric(8, 3))
 
