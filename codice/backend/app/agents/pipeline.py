@@ -159,7 +159,7 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
         await db.commit()
         return 0
 
-    value_candidates = find_value_opportunities(pinnacle_probs, soft_odds, min_ev=0.045)
+    value_candidates = find_value_opportunities(pinnacle_probs, soft_odds, min_ev=0.035)
 
     # ── 2.5. Assess data completeness ─────────────────────────────────────────
     # Evaluate what data was available for analysis before running agents
@@ -228,6 +228,23 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
         # ── Filtro range quote ────────────────────────────────────────────────
         if best_odds_val < ODDS_MIN or best_odds_val > ODDS_MAX:
             logger.info("Skipping %s %s @ %.2f — fuori range", market, outcome, best_odds_val)
+            continue
+
+        # ── Filtro EV per range odds: quote alte richiedono EV superiore ──────
+        # Quote 1.40-3.00: EV >= 3.5%
+        # Quote > 3.00: EV >= 8%
+        if best_odds_val > 3.00:
+            if ev < 0.08:
+                logger.info(
+                    "Skipping %s %s @ %.2f — quota > 3.00 richiede EV >= 8%% (attuale: %+.1f%%)",
+                    market, outcome, best_odds_val, ev * 100
+                )
+                continue
+        elif ev < 0.035:
+            logger.info(
+                "Skipping %s %s @ %.2f — EV insufficiente (%.1f%% < 3.5%%)",
+                market, outcome, best_odds_val, ev * 100
+            )
             continue
 
         # ── Classificazione tier e bet_type ──────────────────────────────────
