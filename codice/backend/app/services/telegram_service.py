@@ -297,22 +297,32 @@ def _format_analysis_reason(reasons: list[str]) -> str:
     return " | ".join(readable)
 
 
-async def send_sport_analysis_report(sport: str, best_bet: dict | None) -> None:
+async def send_sport_analysis_report(sport: str, matches_report: list | None = None, duration_s: float = 0.0) -> None:
     """
-    Send single best value bet for a sport.
+    Send report with all analyzed matches and all qualifying singole per match.
 
     Args:
         sport: "football" | "basketball" | "tennis"
-        best_bet: {
-            "match_name": str,
-            "competition": str,
-            "market": str,
-            "outcome": str,
-            "best_odds": float,
-            "expected_value": float (e.g., 0.042 for 4.2%),
-            "bookmaker": str,
-            "duration_s": float
-        } or None if no opportunities found
+        matches_report: [
+            {
+                "match_name": str,
+                "competition": str,
+                "analysis_status": "complete" | "incomplete" | "unknown",
+                "analysis_reason": str or None,
+                "singole": [
+                    {
+                        "market": str,
+                        "outcome": str,
+                        "best_odds": float,
+                        "expected_value": float,
+                        "bookmaker": str,
+                    },
+                    ...
+                ]
+            },
+            ...
+        ] or None/[] if no matches analyzed
+        duration_s: time spent on analysis in seconds
     """
     if _notifications_paused():
         return
@@ -321,12 +331,13 @@ async def send_sport_analysis_report(sport: str, best_bet: dict | None) -> None:
 
     sport_emoji = {"football": "⚽", "calcio": "⚽", "basketball": "🏀", "basket": "🏀", "tennis": "🎾"}.get(sport.lower(), "📊")
     sport_label = {"football": "CALCIO", "calcio": "CALCIO", "basketball": "BASKET", "basket": "BASKET", "tennis": "TENNIS"}.get(sport.lower(), sport.upper())
+    command = {"football": "ricerca_calcio", "calcio": "ricerca_calcio", "basketball": "ricerca_nba", "basket": "ricerca_nba", "tennis": "ricerca_tennis"}.get(sport.lower(), "ricerca_calcio")
 
-    # No opportunities found
-    if not best_bet:
+    # No matches or empty report
+    if not matches_report:
         msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
-        msg += "❌ Nessuna opportunità trovata con EV sufficiente\n"
-        msg += f"\nRiprova con /{('ricerca_calcio' if sport.lower() in ['football', 'calcio'] else 'ricerca_nba' if sport.lower() in ['basketball', 'basket'] else 'ricerca_tennis')}\n"
+        msg += "❌ Nessuna partita trovata nel timeframe\n"
+        msg += f"\nRiprova con /{command}\n"
         try:
             bot = Bot(token=settings.telegram_bot_token)
             await bot.send_message(
@@ -334,24 +345,49 @@ async def send_sport_analysis_report(sport: str, best_bet: dict | None) -> None:
                 text=msg,
                 parse_mode="HTML",
             )
-            logger.info("No opportunities found for sport: %s", sport)
+            logger.info("No matches found for sport: %s", sport)
         except Exception as exc:
             logger.warning("Notification failed: %s", exc)
         return
 
-    # Format opportunity
-    market_label, outcome_label = _format_market_outcome(best_bet["market"], best_bet["outcome"], sport)
-
+    # Build report header
     msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
-    msg += "<b>Miglior opportunità trovata:</b>\n\n"
-    msg += f"  <b>{best_bet['match_name']}</b> — {best_bet['competition']}\n"
-    msg += f"  Market: {market_label}\n"
-    msg += f"  Outcome: {outcome_label}\n"
-    msg += f"  Quote: {best_bet['best_odds']:.2f} @ {best_bet['bookmaker'].replace('_', ' ').title()}\n"
-    msg += f"  EV: {best_bet['expected_value']:+.1%} ✓\n\n"
-    msg += "  <b>Importo: decidi tu</b>\n"
-    msg += f"\n{_SEP}\n"
-    msg += f"<b>TEMPO ANALISI:</b> {best_bet.get('duration_s', 0):.1f}s\n"
+    msg += f"<b>Partite analizzate:</b> {len(matches_report)}\n\n"
+
+    # Process each match
+    total_singole = 0
+    for i, match in enumerate(matches_report, 1):
+        msg += f"<b>{i}. {match['match_name']}</b> — {match['competition']}\n"
+
+        # Check analysis status
+        if match["analysis_status"] != "complete":
+            msg += f"   ⚠️ Analisi incompleta"
+            if match["analysis_reason"]:
+                msg += f": {match['analysis_reason']}"
+            msg += "\n"
+        else:
+            msg += "   ✓ Analisi completa\n"
+
+        # Show all singole for this match
+        singole = match.get("singole", [])
+        if singole:
+            for j, singola in enumerate(singole, 1):
+                market_label, outcome_label = _format_market_outcome(singola["market"], singola["outcome"], sport)
+                msg += f"\n   <b>{j}.</b> {market_label} → {outcome_label}\n"
+                msg += f"       Quote: {singola['best_odds']:.2f} @ {singola['bookmaker'].replace('_', ' ').title()}\n"
+                msg += f"       EV: {singola['expected_value']:+.1%}\n"
+                total_singole += 1
+        else:
+            msg += "   ❌ Nessuna singola di valore trovata\n"
+
+        msg += "\n"
+
+    # Footer
+    msg += _SEP + "\n"
+    if total_singole > 0:
+        msg += f"<b>TOTALE SINGOLE:</b> {total_singole}\n"
+    msg += f"<b>TEMPO ANALISI:</b> {duration_s:.1f}s\n"
+    msg += f"<b>AZIONE:</b> Accetta o rifiuta proposte con /scommesse\n"
 
     try:
         bot = Bot(token=settings.telegram_bot_token)
@@ -360,9 +396,9 @@ async def send_sport_analysis_report(sport: str, best_bet: dict | None) -> None:
             text=msg,
             parse_mode="HTML",
         )
-        logger.info("Best bet sent for sport: %s (%s @ %.2f, EV: %.1f%%)", sport, best_bet["outcome"], best_bet["best_odds"], best_bet["expected_value"] * 100)
+        logger.info("Sport analysis report sent: %s (%d matches, %d singole, %.1fs)", sport, len(matches_report), total_singole, duration_s)
     except Exception as exc:
-        logger.warning("Best bet notification failed: %s", exc)
+        logger.warning("Report notification failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

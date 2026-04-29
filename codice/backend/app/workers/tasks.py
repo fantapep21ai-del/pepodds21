@@ -806,7 +806,7 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
             # Step 3: dispatch agent analysis for each match
             from app.agents.pipeline import analyse_match
             opportunities_found = 0
-            best_bet = None  # Track best EV opportunity across all matches
+            matches_report = []  # Collect all matches with their singole
 
             for match in matches:
                 n = await analyse_match(match, db)
@@ -815,7 +815,7 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
                 # Reload match to get updated analysis_status and analysis_reason
                 await db.refresh(match)
 
-                # Find best EV opportunity for this match
+                # Find ALL qualifying singole for this match (not just best one)
                 opps_result = await db.execute(
                     select(BettingOpportunity)
                     .where(BettingOpportunity.match_id == match.id)
@@ -824,20 +824,26 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
                 )
                 match_opps = opps_result.scalars().all()
 
-                # Keep track of the single best EV across all matches
-                if match_opps:
-                    best_opp_in_match = match_opps[0]
-                    if best_bet is None or float(best_opp_in_match.expected_value) > best_bet.get("expected_value", 0):
-                        competition_name = match.competition.name if match.competition else "Unknown"
-                        best_bet = {
-                            "match_name": match.display_name(),
-                            "competition": competition_name,
-                            "market": best_opp_in_match.market or "",
-                            "outcome": best_opp_in_match.outcome or "",
-                            "best_odds": float(best_opp_in_match.best_odds) if best_opp_in_match.best_odds else 0.0,
-                            "expected_value": float(best_opp_in_match.expected_value) if best_opp_in_match.expected_value else 0.0,
-                            "bookmaker": best_opp_in_match.bookmaker or "",
-                        }
+                # Build match report with all its singole
+                singole = []
+                for opp in match_opps:
+                    singole.append({
+                        "market": opp.market or "",
+                        "outcome": opp.outcome or "",
+                        "best_odds": float(opp.best_odds) if opp.best_odds else 0.0,
+                        "expected_value": float(opp.expected_value) if opp.expected_value else 0.0,
+                        "bookmaker": opp.bookmaker or "",
+                    })
+
+                # Only include match in report if it has singole OR if analysis was incomplete
+                match_report = {
+                    "match_name": match.display_name(),
+                    "competition": match.competition.name if match.competition else "Unknown",
+                    "analysis_status": match.analysis_status or "unknown",
+                    "analysis_reason": match.analysis_reason,
+                    "singole": singole,
+                }
+                matches_report.append(match_report)
 
             # Update pipeline record
             finished_at = datetime.now(timezone.utc)
@@ -849,14 +855,14 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
 
             duration_s = (finished_at - started_at).total_seconds()
 
-            # Notifica Telegram con singola best bet
+            # Notifica Telegram con tutte le singole per match
             if sport:
-                # Add duration to best_bet for logging
-                if best_bet:
-                    best_bet["duration_s"] = duration_s
-
                 from app.services.telegram_service import send_sport_analysis_report
-                await send_sport_analysis_report(sport=sport, best_bet=best_bet)
+                await send_sport_analysis_report(
+                    sport=sport,
+                    matches_report=matches_report,
+                    duration_s=duration_s
+                )
             else:
                 # Fallback per pipeline generale (senza sport specifico)
                 if opportunities_found == 0:
