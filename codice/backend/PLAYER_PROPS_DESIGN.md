@@ -54,10 +54,15 @@ player_stats = {
 ```
 
 **Fonti dati:**
-- xG: Dunkest API (già in codice per football_client)
-- Presenze/minuti: API-Football
-- Forma: Calcolo da ultimi match (win/draw/loss)
-- Difesa avversario: Rating Elo stagionale
+- xG: API-Football (api-sports.io) → già integrato
+- Presenze/minuti/gol/assist: API-Football (api-sports.io)
+- Forma: Football-data.org + calcolo da ultimi match
+- Difesa avversario: Rating Elo stagionale (da standings API-Football)
+
+**API-Football (api-sports.io):**
+- Endpoint: `/fixtures/{id}/statistics` → team/player stats
+- Copre: gol, assist, tiri, passaggi, tackles, pressione
+- Budget: 10 req/giorno per sport (100 available) ✅ feasible
 
 **Segnale agente (0-1):**
 ```
