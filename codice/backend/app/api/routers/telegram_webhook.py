@@ -2,10 +2,10 @@
 Telegram webhook — riceve aggiornamenti dal bot e gestisce comandi e callback.
 
 Comandi supportati:
-  /ricerca          — Ricerca tutti gli sport (80/mese)
-  /ricerca_calcio   — Ricerca calcio (35/mese)
-  /ricerca_nba      — Ricerca NBA (35/mese)
-  /ricerca_tennis   — Ricerca tennis (35/mese)
+  /ricerca          — Ricerca tutti gli sport (300/mese)
+  /ricerca_calcio   — Ricerca calcio (150/mese)
+  /ricerca_nba      — Ricerca NBA (150/mese)
+  /ricerca_tennis   — Ricerca tennis (150/mese)
   /oggi             — Partite di oggi
   /opportunita      — Opportunità pendenti
   /bilancio         — P&L e statistiche
@@ -767,8 +767,11 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
             count = await r.incr(month_key)
             await r.expire(month_key, 86400 * 31)  # expire in 31 days
 
-        # Warning thresholds vary by sport: all=80, individual=35
-        limit = 80 if sport is None else 35
+        # Limiti basati su The Odds API: Free=500 req/mese, Essential=20,000/mese
+        # Una ricerca calcio ~8 req, nba/tennis ~2 req
+        # Free plan: 60+ ricerche calcio, 250+ nba/tennis possibili
+        # Usiamo valori conservativi: singoli sport=150, all=300
+        limit = 300 if sport is None else 150
         count_msg = f"📊 Ricerca #{count} questo mese ({sport_label})"
         if count > int(limit * 0.95):
             count_msg += f" ⚠️ <b>ATTENZIONE: stai per esaurire i crediti ({count}/{limit})!</b>"
