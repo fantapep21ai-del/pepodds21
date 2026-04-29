@@ -688,6 +688,7 @@ def run_daily_pipeline(self):
     5. Telegram notification
     """
     import redis
+    from app.config import settings
 
     # Leggi il sport da Redis (salvato in telegram_webhook.py)
     task_id = self.request.id
