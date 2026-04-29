@@ -387,7 +387,8 @@ async def send_sport_analysis_report(sport: str, matches_report: list | None = N
     if total_singole > 0:
         msg += f"<b>TOTALE SINGOLE:</b> {total_singole}\n"
     msg += f"<b>TEMPO ANALISI:</b> {duration_s:.1f}s\n"
-    msg += f"<b>AZIONE:</b> Accetta o rifiuta proposte con /scommesse\n"
+    if total_singole > 0:
+        msg += f"<b>AZIONE:</b> Accetta o rifiuta con /opportunita\n"
 
     try:
         bot = Bot(token=settings.telegram_bot_token)
