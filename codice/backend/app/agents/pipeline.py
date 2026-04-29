@@ -296,12 +296,6 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
         reliability  = max(0.05, min(0.92, raw_reliability * context_mult * agent_mult))
 
         # ── Filtri affidabilità per tipo di giocata ──────────────────────────
-        if tier_result.bet_type == "scalata" and reliability < 0.55:
-            logger.info(
-                "Skipping %s %s @ %.2f — scalata con affidabilità insufficiente (%.0f%% < 55%%)",
-                market, outcome, best_odds_val, reliability * 100,
-            )
-            continue
         if best_odds_val > 2.30 and tier_result.bet_type == "singola" and reliability < 0.70:
             logger.info(
                 "Skipping %s %s @ %.2f — quota alta con affidabilità insufficiente (%.0f%% < 70%%)",

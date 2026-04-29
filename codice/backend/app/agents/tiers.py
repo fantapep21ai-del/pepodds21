@@ -56,13 +56,8 @@ def classify(
         tier = "C"
 
     # ── Bet type ──────────────────────────────────────────────────────────────
-    # 1.30–1.70 → scalata (quota bassa, ideale per compounding sequenziale)
-    # 1.70–2.20 → singola ideale
-    # 2.20–5.00 → singola accettabile (quota più alta, meno probabile)
-    if 1.30 <= best_odds < 1.70 and tier in ("S", "A", "B"):
-        bet_type = "scalata"
-    else:
-        bet_type = "singola"
+    # Tutto "singola" — sistema semplificato, niente scalate
+    bet_type = "singola"
 
     # ── UI label ──────────────────────────────────────────────────────────────
     if tier == "S":
