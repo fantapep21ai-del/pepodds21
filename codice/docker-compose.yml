@@ -65,8 +65,7 @@ services:
     volumes:
       - celerybeat_data:/app/celerybeat
     command: celery -A app.workers.celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler --schedule /app/celerybeat/celerybeat-schedule
-    # DISABLED: use /ricerca command from Telegram instead of polling
-    # profiles: ["disabled"]
+    profiles: ["disabled"]
 
   frontend:
     build:
