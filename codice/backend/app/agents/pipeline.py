@@ -65,7 +65,7 @@ def get_ev_threshold(odds: float) -> float | None:
         return 0.08   # 8.0%
 
 
-async def analyse_match(match: Match, db: AsyncSession) -> int:
+async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> int:
     """
     Pipeline completo per una partita.
     Ritorna numero di opportunità trovate e salvate.
@@ -172,7 +172,36 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
         await db.commit()
         return 0
 
-    value_candidates = find_value_opportunities(pinnacle_probs, soft_odds, min_ev=0.035)
+    # Filter soft bookmakers: exclude CLV blacklisted ones
+    blacklisted_bookmakers = set()
+    if redis_client:
+        try:
+            import json
+            blacklist_json = await redis_client.get("bookmaker:clv:blacklist")
+            if blacklist_json:
+                blacklisted_bookmakers = set(json.loads(blacklist_json))
+                logger.debug("CLV blacklist loaded: %s", blacklisted_bookmakers)
+        except Exception as e:
+            logger.warning("Failed to load CLV blacklist: %s", e)
+
+    # Filter soft odds: remove blacklisted bookmakers + require minimum 2 soft bookmakers
+    soft_odds_filtered = [o for o in soft_odds if o["bookmaker"] not in blacklisted_bookmakers]
+
+    if len(soft_odds_filtered) < 2:
+        await db.execute(
+            update(Match)
+            .where(Match.id == match.id)
+            .values(
+                analysis_status="incomplete",
+                analysis_reason={"type": "incomplete", "reasons": ["insufficient_soft_bookmakers"]},
+                updated_at=datetime.now(timezone.utc)
+            )
+        )
+        await db.commit()
+        logger.info("Skipping %s — not enough soft bookmakers (have %d after blacklist)", match.display_name(), len(soft_odds_filtered))
+        return 0
+
+    value_candidates = find_value_opportunities(pinnacle_probs, soft_odds_filtered, min_ev=0.035)
 
     # Apply dynamic EV threshold based on odds range
     filtered_candidates = []

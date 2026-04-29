@@ -23,6 +23,11 @@ MIN_CONSENSUS_PROB  = 0.10   # permette pareggi e outsider nel calcio (prob >10%
 
 SHARP_BOOKMAKERS = {"pinnacle", "betfair_ex_eu"}
 
+# CLV Blacklist thresholds
+CLV_BLACKLIST_THRESHOLD = -0.05  # -5% CLV per blacklist
+CLV_MIN_SAMPLES = 10  # Min settled bets to trigger blacklist
+CLV_BLACKLIST_DAYS = 30  # Blacklist duration in days
+
 
 # ── No-vig calculation ────────────────────────────────────────────────────────
 
@@ -201,14 +206,35 @@ class OpportunityCandidate(NamedTuple):
     reference_source: str = "pinnacle_no_vig"
 
 
+async def _get_blacklisted_bookmakers(redis_client) -> set[str]:
+    """
+    Fetch bookmakers blacklisted due to negative CLV.
+    Returns set of blacklisted bookmaker names.
+    """
+    try:
+        blacklist_json = await redis_client.get("bookmaker:clv:blacklist")
+        if blacklist_json:
+            import json
+            return set(json.loads(blacklist_json))
+    except Exception:
+        pass
+    return set()
+
+
 def run_consensus(
     agent_results: list[AgentResult],
     available_odds: list[dict],
     agent_weights: dict[str, float],
+    redis_client=None,
 ) -> tuple[list[OpportunityCandidate], float]:
     """Interfaccia backward-compat. Il pipeline principale non la usa più."""
     sharp = [o for o in available_odds if o["bookmaker"] in SHARP_BOOKMAKERS]
+
+    # Filter soft bookmakers (exclude blacklisted ones)
     soft  = [o for o in available_odds if o["bookmaker"] not in SHARP_BOOKMAKERS]
+
+    # Note: CLV blacklist filtering happens asynchronously in pipeline.analyse_match()
+    # where we have access to redis_client. This function is a legacy interface.
 
     uncertainty_score = _extract_uncertainty(agent_results)
     if uncertainty_score >= UNCERTAINTY_GATE:

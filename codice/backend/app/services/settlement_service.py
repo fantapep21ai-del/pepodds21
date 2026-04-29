@@ -85,14 +85,23 @@ class SettlementService:
         if bet.status != "open":
             return False
 
+        # [TIMING FIX] Wait 2:30h from match start before attempting settlement
+        now_utc = datetime.now(timezone.utc)
+        from datetime import timedelta
+        if match.match_date and (now_utc - match.match_date) < timedelta(hours=2, minutes=30):
+            logger.debug(
+                "⏳ Skipping settlement for %s — only %.1f hours elapsed (need 2.5h)",
+                match.display_name(),
+                (now_utc - match.match_date).total_seconds() / 3600
+            )
+            return False
+
         # Try to get scores
         scores = await self._get_match_scores(match)
         if scores is None:
             # [BUG #3 HARDENED] Retry con MAX_RETRIES cap e exponential backoff
-            from datetime import timedelta
             import asyncio
-            now_utc = datetime.now(timezone.utc)
-            if match.match_date and (now_utc - match.match_date) > timedelta(hours=2):
+            if match.match_date and (now_utc - match.match_date) > timedelta(hours=2, minutes=30):
                 try:
                     pending_meta = json.loads(bet.notes) if bet.notes else {}
                 except (json.JSONDecodeError, TypeError):

@@ -805,11 +805,15 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
 
             # Step 3: dispatch agent analysis for each match
             from app.agents.pipeline import analyse_match
+            import redis as _redis
             opportunities_found = 0
             matches_report = []  # Collect all matches with their singole
 
+            # Get Redis client for CLV blacklist
+            redis_client = _redis.from_url(settings.redis_url_with_auth, decode_responses=True)
+
             for match in matches:
-                n = await analyse_match(match, db)
+                n = await analyse_match(match, db, redis_client=redis_client)
                 opportunities_found += n
 
                 # Reload match to get updated analysis_status and analysis_reason
@@ -1066,6 +1070,50 @@ async def _update_clv_async() -> None:
         if updated:
             await db.commit()
             logger.info("CLV updated for %d bets (benchmark: Pinnacle closing)", updated)
+
+        # Update CLV blacklist for soft bookmakers with negative CLV
+        blacklist_result = await db.execute(
+            select(
+                Bet.bookmaker,
+                func.count(Bet.id).label("count"),
+                func.avg(Bet.clv).label("avg_clv")
+            )
+            .where(
+                and_(
+                    Bet.status.in_(["won", "lost"]),
+                    Bet.clv.isnot(None),
+                    Bet.bookmaker.notin_(PINNACLE_KEYS)  # Soft bookmakers only
+                )
+            )
+            .group_by(Bet.bookmaker)
+            .having(func.count(Bet.id) >= 10)  # Min 10 settled bets
+        )
+        blacklist_rows = blacklist_result.all()
+
+        blacklisted = set()
+        for row in blacklist_rows:
+            bookmaker = row[0]
+            count = row[1]
+            avg_clv = float(row[2]) if row[2] else 0.0
+
+            # If avg CLV < -5%, add to blacklist
+            if avg_clv < -5.0:
+                blacklisted.add(bookmaker)
+                logger.warning(
+                    "🚫 CLV blacklist: %s (avg CLV: %+.2f%% on %d bets)",
+                    bookmaker, avg_clv, count
+                )
+
+        # Save blacklist to Redis with 30-day TTL
+        if blacklisted:
+            import json
+            import redis as _redis
+            try:
+                r = _redis.from_url(settings.redis_url_with_auth, decode_responses=True)
+                r.setex("bookmaker:clv:blacklist", 86400 * 30, json.dumps(list(blacklisted)))
+                logger.info("CLV blacklist updated in Redis: %s", blacklisted)
+            except Exception as e:
+                logger.error("Failed to update CLV blacklist in Redis: %s", e)
 
 
 # ── Auto-expire "in_attesa" quando la partita inizia ─────────────────────────
