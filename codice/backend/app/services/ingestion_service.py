@@ -19,6 +19,93 @@ from app.services.stats_fetcher import FootballStatsClient, TennisStatsClient
 
 logger = logging.getLogger(__name__)
 
+# ────────────────────────────────────────────────────────────────────────────────
+# COMPETITION FILTERS — Sport-specific league/tournament restrictions
+# ────────────────────────────────────────────────────────────────────────────────
+
+COMPETITION_FILTERS = {
+    "football": {
+        "leagues": [
+            "Serie A", "Bundesliga", "Champions League", "Europa League",
+            "Premier League", "La Liga", "Ligue 1"
+        ]
+    },
+    "tennis": {
+        "tournaments": [
+            # Grand Slams
+            "Australian Open", "French Open", "Wimbledon", "US Open",
+            # Masters 1000
+            "Indian Wells", "Miami", "Monte Carlo", "Rome", "Madrid",
+            "Canada", "Cincinnati", "Shanghai", "Paris",
+            "ATP 1000",  # Generic masters fallback
+        ],
+        "gender": "male",  # Singles only
+    },
+    "basketball": {
+        "leagues": ["NBA"],
+        "include_playoffs": True,
+    }
+}
+
+LEAGUE_ALIASES = {
+    "football": {
+        "Serie A": ["Serie A", "Serie A TIM", "Serie A 2023", "Serie A 2024", "Serie A 2025"],
+        "Bundesliga": ["Bundesliga", "1. Bundesliga", "German Bundesliga"],
+        "Champions League": ["UEFA Champions League", "Champions League", "CL"],
+        "Europa League": ["UEFA Europa League", "Europa League", "EL"],
+        "Premier League": ["English Premier League", "Premier League", "EPL"],
+        "La Liga": ["La Liga", "La Liga EA Sports", "Spanish La Liga"],
+        "Ligue 1": ["Ligue 1", "Ligue 1 Uber Eats"],
+    },
+    "tennis": {
+        "Australian Open": ["Australian Open", "AO", "Australian"],
+        "French Open": ["French Open", "Roland Garros", "FO"],
+        "Wimbledon": ["Wimbledon", "Championships", "W"],
+        "US Open": ["US Open", "USO", "US"],
+        "Indian Wells": ["Indian Wells", "BNP Paribas Open"],
+        "Miami": ["Miami", "Miami Open"],
+        "Monte Carlo": ["Monte Carlo", "Monte-Carlo Masters"],
+        "Rome": ["Rome", "Italian Open"],
+        "Madrid": ["Madrid", "Madrid Masters"],
+        "Canada": ["Canada", "Canada Masters", "Canadian Open"],
+        "Cincinnati": ["Cincinnati", "Cincinnati Masters"],
+        "Shanghai": ["Shanghai", "Shanghai Masters"],
+        "Paris": ["Paris", "Paris Masters"],
+    },
+    "basketball": {
+        "NBA": ["NBA", "National Basketball Association"],
+        "Playoffs": ["NBA Playoffs", "Playoff", "Finals"],
+    }
+}
+
+
+def normalize_league_name(raw_name: str, sport: str) -> str | None:
+    """
+    Match raw API league name against known leagues/tournaments.
+    Returns canonical league name or None if not recognized.
+    """
+    if not raw_name or sport not in LEAGUE_ALIASES:
+        return None
+
+    raw_lower = raw_name.lower()
+    for canonical, aliases in LEAGUE_ALIASES[sport].items():
+        if any(alias.lower() in raw_lower for alias in aliases):
+            return canonical
+    return None
+
+
+def is_league_allowed(league_name: str, sport: str) -> bool:
+    """
+    Check if a league/tournament is allowed for a specific sport.
+    """
+    if sport not in COMPETITION_FILTERS:
+        return True  # No filter = allow all
+
+    filter_config = COMPETITION_FILTERS[sport]
+    allowed_leagues = filter_config.get("leagues", []) + filter_config.get("tournaments", [])
+
+    return league_name in allowed_leagues
+
 
 class IngestionService:
 
@@ -203,8 +290,23 @@ class IngestionService:
         new_comps = [c for c in result_new.scalars().all() if c.id not in active_ids]
 
         to_fetch = active_comps + new_comps  # NESSUN LIMITE se sport-specific
+
+        # ── APPLY LEAGUE FILTERS (sport-specific) ──
+        if sport:
+            filtered_comps = []
+            for comp in to_fetch:
+                canonical_league = normalize_league_name(comp.name, sport)
+                if canonical_league and is_league_allowed(canonical_league, sport):
+                    filtered_comps.append(comp)
+                else:
+                    logger.debug(
+                        "Skipping competition %s (sport=%s): not in allowed list",
+                        comp.name, sport
+                    )
+            to_fetch = filtered_comps
+
         logger.info(
-            "ingest_all_odds (sport=%s): %d attive + %d nuove = %d totale",
+            "ingest_all_odds (sport=%s): %d attive + %d nuove → %d after filters",
             sport or "all", len(active_comps), len(new_comps), len(to_fetch),
         )
 

@@ -738,9 +738,10 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             # Step 1: usa quote già in DB (fetch separato via fetch_all_odds alle 09:30 UTC)
             # NON ri-fetcha le quote qui — evita sprechi quota API (500 req/mese free plan)
 
-            # Step 2: find matches in next 48h with fresh odds (filtrato per sport se specificato)
+            # Step 2: find matches in next 18h with fresh odds (filtrato per sport + league se specificato)
             from sqlalchemy.orm import selectinload
-            cutoff = datetime.now(timezone.utc) + timedelta(hours=48)
+            from sqlalchemy import join
+            cutoff = datetime.now(timezone.utc) + timedelta(hours=18)
 
             where_conditions = [
                 Match.status == "scheduled",
@@ -756,7 +757,23 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                 .options(selectinload(Match.competition))
                 .where(and_(*where_conditions))
             )
-            matches = result.scalars().all()
+            matches_raw = result.scalars().all()
+
+            # Filtra per allowed leagues se sport-specific
+            if sport:
+                from app.services.ingestion_service import normalize_league_name, is_league_allowed
+                matches = []
+                for m in matches_raw:
+                    if m.competition:
+                        canonical = normalize_league_name(m.competition.name, sport)
+                        if canonical and is_league_allowed(canonical, sport):
+                            matches.append(m)
+                logger.info(
+                    "🏛️ League filtering (sport=%s): %d raw → %d allowed",
+                    sport, len(matches_raw), len(matches)
+                )
+            else:
+                matches = matches_raw
 
             # Step 3: dispatch agent analysis for each match (game lines + player props)
             from app.agents.pipeline import analyse_match
@@ -765,10 +782,14 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             props_found = 0
             matches_with_opps = []
             matches_without_opps = []
+            incomplete_analysis = []
 
             for match in matches:
                 n = await analyse_match(match, db)
                 opportunities_found += n
+
+                # Reload match to get updated analysis_status and analysis_reason
+                await db.refresh(match)
 
                 # Raccogli opportunità create per questo match
                 opps_result = await db.execute(
@@ -777,6 +798,8 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                     .where(BettingOpportunity.status == "pending")
                 )
                 match_opps = opps_result.scalars().all()
+
+                competition_name = match.competition.name if match.competition else "Unknown"
 
                 if match_opps:
                     opps_data = []
@@ -790,10 +813,22 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                         })
                     matches_with_opps.append({
                         "name": match.display_name(),
-                        "opps": opps_data,
+                        "competition": competition_name,
+                        "opportunities": opps_data,
                     })
-                else:
-                    matches_without_opps.append(match.display_name())
+                elif match.analysis_status == "complete":
+                    # Match analyzed completely but no opportunities found
+                    matches_without_opps.append({
+                        "name": match.display_name(),
+                        "competition": competition_name,
+                    })
+                elif match.analysis_status in ("incomplete", "no_data"):
+                    # Match with incomplete analysis — show the reason
+                    incomplete_analysis.append({
+                        "name": match.display_name(),
+                        "competition": competition_name,
+                        "analysis_reason": match.analysis_reason,
+                    })
 
                 # Player props: solo per basketball e calcio top tier
                 if match.sport in ("basketball", "football"):
@@ -825,10 +860,10 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                 await send_sport_analysis_report(
                     sport=sport,
                     matches_data={
-                        "matches_processed": len(matches),
-                        "matches_with_opps": matches_with_opps,
-                        "matches_without_opps": matches_without_opps,
-                        "player_props_found": props_found,
+                        "total_matches": len(matches),
+                        "complete_with_opportunities": matches_with_opps,
+                        "complete_without_opportunities": matches_without_opps,
+                        "incomplete_analysis": incomplete_analysis,
                         "duration_s": duration_s,
                     }
                 )

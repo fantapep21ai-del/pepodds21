@@ -23,7 +23,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select, func, insert, and_
+from sqlalchemy import select, func, insert, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.match import Match, MatchOdds
@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 UNCERTAINTY_GATE    = 0.70   # UncertaintyAgent: blocca se score ≥ 0.70
 AGENT_BLOCK_SIGNAL  = 0.30   # Blocca se segnale agenti < 0.30 con ≥2 agenti disponibili
+SHARP_BOOKMAKERS    = {"pinnacle", "betfair"}  # Reference markets for no-vig calculation
 
 # ── Range quote ───────────────────────────────────────────────────────────────
 ODDS_MIN          = 1.30   # sotto: scartata anche per scalata
@@ -118,18 +119,69 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
     if not sharp_odds:
         if not all_odds:
             logger.info("No fresh odds (< 6h) for %s — skip", match.display_name())
+            # Update match analysis status: no data
+            await db.execute(
+                update(Match)
+                .where(Match.id == match.id)
+                .values(
+                    analysis_status="no_data",
+                    analysis_reason={"type": "no_data", "reasons": ["no_fresh_odds"]},
+                    updated_at=datetime.now(timezone.utc)
+                )
+            )
+            await db.commit()
         else:
             logger.info("No sharp odds for %s — skip", match.display_name())
+            await db.execute(
+                update(Match)
+                .where(Match.id == match.id)
+                .values(
+                    analysis_status="no_data",
+                    analysis_reason={"type": "no_data", "reasons": ["no_pinnacle_quotes"]},
+                    updated_at=datetime.now(timezone.utc)
+                )
+            )
+            await db.commit()
         return 0
 
     # ── 3. No-vig + EV (matematica pura, 0 LLM) ──────────────────────────────
     pinnacle_probs = compute_no_vig(sharp_odds)
     if not pinnacle_probs:
+        await db.execute(
+            update(Match)
+            .where(Match.id == match.id)
+            .values(
+                analysis_status="incomplete",
+                analysis_reason={"type": "incomplete", "reasons": ["no_vig_calculation_failed"]},
+                updated_at=datetime.now(timezone.utc)
+            )
+        )
+        await db.commit()
         return 0
 
-    value_candidates = find_value_opportunities(pinnacle_probs, soft_odds, min_ev=0.03)
+    value_candidates = find_value_opportunities(pinnacle_probs, soft_odds, min_ev=0.045)
+
+    # ── 2.5. Assess data completeness ─────────────────────────────────────────
+    # Evaluate what data was available for analysis before running agents
+    analysis_status, missing_data = assess_analysis_completeness(
+        match=match,
+        all_odds=all_odds,
+        sharp_odds=sharp_odds,
+    )
+
     if not value_candidates:
         logger.info("No value found for %s (Pinnacle math)", match.display_name())
+        # Update analysis status: complete but no value
+        await db.execute(
+            update(Match)
+            .where(Match.id == match.id)
+            .values(
+                analysis_status=analysis_status,
+                analysis_reason={"type": analysis_status, "reasons": missing_data} if missing_data else None,
+                updated_at=datetime.now(timezone.utc)
+            )
+        )
+        await db.commit()
         return 0
 
     logger.info(
@@ -377,6 +429,17 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
         # Passa synthesis data all'alert per miglior formatting
         synthesis_narrative = synthesis_data.get("narrative", "")
         await _send_alert(opportunity, match, reliability, uncertainty_reasoning, agent_insights, synthesis_narrative)
+
+    # Mark match as fully analyzed (complete)
+    await db.execute(
+        update(Match)
+        .where(Match.id == match.id)
+        .values(
+            analysis_status="complete",
+            analysis_reason=None,
+            updated_at=datetime.now(timezone.utc)
+        )
+    )
 
     await db.commit()
     logger.info(
@@ -669,6 +732,51 @@ async def _build_context(match: Match, db: AsyncSession, all_odds: list[dict]) -
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def assess_analysis_completeness(
+    match: Match,
+    all_odds: list[dict],
+    sharp_odds: list[dict],
+) -> tuple[str, list[str]]:
+    """
+    Assess whether a match had complete data for analysis.
+
+    Returns (status: str, missing_reasons: list[str])
+      status: "complete" | "incomplete" | "no_data"
+      missing_reasons: list of specific data gaps (empty if complete)
+    """
+    missing = []
+
+    # Check Pinnacle quotes (essential for no-vig calculation)
+    if not sharp_odds:
+        missing.append("no_pinnacle_quotes")
+
+    # Check minimum number of bookmakers (need 4+ for signal)
+    if len(all_odds) < 4:
+        missing.append("insufficient_bookmakers")
+
+    # Check stats availability
+    if not match.raw_stats or not match.raw_stats.get("stats"):
+        missing.append("stats_incomplete")
+
+    # Check form data (team form, standings)
+    if not match.raw_stats or not match.raw_stats.get("form"):
+        missing.append("form_data_missing")
+
+    # Check injuries (sport-specific)
+    if match.sport in ("football", "basketball"):
+        if not match.raw_stats or not match.raw_stats.get("injuries"):
+            missing.append("injury_data_missing")
+
+    # Check weather (football only)
+    if match.sport == "football":
+        if not match.raw_stats or not match.raw_stats.get("weather"):
+            missing.append("weather_unavailable")
+
+    if missing:
+        return ("incomplete", missing)
+    return ("complete", [])
+
 
 def _extract_uncertainty_score(result: AgentResult) -> float:
     if result.failed:

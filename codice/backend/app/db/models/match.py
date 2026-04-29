@@ -36,6 +36,8 @@ class Match(Base):
     status: Mapped[str] = mapped_column(String(30), default="scheduled")
     external_id: Mapped[Optional[str]] = mapped_column(String(200), unique=True)
     raw_stats: Mapped[Optional[dict]] = mapped_column(JSONB)
+    analysis_status: Mapped[str] = mapped_column(String(30), default="pending")  # pending | complete | incomplete | no_data
+    analysis_reason: Mapped[Optional[dict]] = mapped_column(JSONB)  # {"type": "incomplete", "reasons": [...]}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
