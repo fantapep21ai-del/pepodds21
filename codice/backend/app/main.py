@@ -17,7 +17,6 @@ from app.api.routers import settings as settings_router
 from app.api.routers import telegram_webhook
 from app.api.routers import intelligence
 from app.api.routers import analytics
-from app.api.routers import bankroll
 # from app.api.routers import results  # module does not exist
 
 logger = logging.getLogger(__name__)
@@ -89,7 +88,6 @@ app.include_router(settings_router.router)
 app.include_router(telegram_webhook.router)
 app.include_router(intelligence.router)
 app.include_router(analytics.router)
-app.include_router(bankroll.router)
 
 
 @app.get("/health")

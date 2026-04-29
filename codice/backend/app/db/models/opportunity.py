@@ -36,11 +36,6 @@ class BettingOpportunity(Base):
     bet_type: Mapped[str] = mapped_column(String(30), default="singola")  # singola only
     confidence_level: Mapped[str] = mapped_column(String(20), default="normale")  # alta | normale | bassa
 
-    # Composite bet linkage (double/multiple)
-    composite_bet_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("composite_bets.id"), nullable=True
-    )
-
     reference_source: Mapped[Optional[str]] = mapped_column(String(30), default="agent_consensus")  # pinnacle_no_vig | agent_consensus
     status: Mapped[str] = mapped_column(String(30), default="pending")
     rejection_reason: Mapped[Optional[str]] = mapped_column(Text)

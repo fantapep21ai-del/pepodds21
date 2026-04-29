@@ -42,8 +42,9 @@ COMPETITION_FILTERS = {
         "gender": "male",  # Singles only
     },
     "basketball": {
-        "leagues": ["NBA"],
+        "leagues": ["NBA", "NBA Playoffs"],
         "include_playoffs": True,
+        "playoff_until": "2026-06-30",  # Seasonal cutoff
     }
 }
 

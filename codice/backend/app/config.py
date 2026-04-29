@@ -61,13 +61,7 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str
     telegram_chat_id: str
-    telegram_webhook_url: str = ""  # es. https://178.104.205.229/api/telegram/webhook
-
-    # Bankroll management
-    initial_bankroll: float = Field(default=1000.0, gt=0)
-    kelly_multiplier: float = Field(default=0.25, gt=0.0, le=1.0)
-    max_daily_exposure_pct: float = Field(default=0.12, gt=0.0, le=0.5)
-    scalata_start_amount: float = Field(default=20.0, gt=0)  # importo di partenza scalate auto
+    telegram_webhook_url: str = ""  # es. https://178.104.205.229/telegram/webhook
 
     # System
     environment: Literal["development", "production"] = "development"

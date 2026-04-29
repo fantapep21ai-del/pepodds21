@@ -703,21 +703,29 @@ def run_daily_pipeline(self):
     import redis
     from app.config import settings
 
-    # Leggi il sport da Redis (salvato in telegram_webhook.py)
+    # Leggi il sport e command_timestamp da Redis (salvati in telegram_webhook.py)
     task_id = self.request.id
     sport = None
+    command_timestamp = None
     try:
         r = redis.Redis.from_url(settings.redis_url_with_auth, decode_responses=True)
         sport_value = r.get(f"celery:sport:{task_id}")
         sport = sport_value if (sport_value and sport_value != "all") else None
-        logger.info("🔥 run_daily_pipeline ENTRY: task_id=%s, sport_value=%r, sport=%r (from Redis)", task_id, sport_value, sport)
+
+        timestamp_str = r.get(f"celery:timestamp:{task_id}")
+        if timestamp_str:
+            from datetime import datetime
+            command_timestamp = datetime.fromisoformat(timestamp_str)
+
+        logger.info("🔥 run_daily_pipeline ENTRY: task_id=%s, sport=%r, command_ts=%s (from Redis)", task_id, sport, command_timestamp)
     except Exception as exc:
-        logger.warning("Failed to read sport from Redis: %s", exc)
+        logger.warning("Failed to read params from Redis: %s", exc)
         sport = None
+        command_timestamp = None
 
     logger.info("Task run_daily_pipeline started (sport=%s)", sport or "all")
     try:
-        result = _run(_run_daily_pipeline_async(sport=sport))
+        result = _run(_run_daily_pipeline_async(sport=sport, command_timestamp=command_timestamp))
         logger.info("run_daily_pipeline done: %s", result)
         return result
     except Exception as exc:
@@ -725,7 +733,7 @@ def run_daily_pipeline(self):
         raise self.retry(exc=exc, countdown=300)
 
 
-async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
+async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp: datetime | None = None) -> dict:
     from datetime import timedelta
     from sqlalchemy import select, and_
     from app.db.base import AsyncSessionLocal
@@ -734,7 +742,7 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
     from app.db.models.runs import PipelineRun
     from app.services.ingestion_service import IngestionService
 
-    logger.info("🔥 _run_daily_pipeline_async ENTRY: sport=%r (type=%s, bool=%s)", sport, type(sport).__name__, bool(sport))
+    logger.info("🔥 _run_daily_pipeline_async ENTRY: sport=%r, command_timestamp=%s", sport, command_timestamp)
 
     started_at = datetime.now(timezone.utc)
     pipeline_run_id = None
@@ -754,7 +762,14 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             # Step 2: find matches in next 18h with fresh odds (filtrato per sport + league se specificato)
             from sqlalchemy.orm import selectinload
             from sqlalchemy import join
-            cutoff = datetime.now(timezone.utc) + timedelta(hours=18)
+
+            # Use command timestamp for 18h window, or fallback to NOW() if not provided
+            if command_timestamp:
+                cutoff = command_timestamp + timedelta(hours=18)
+                logger.info("⏱️ Using command timestamp for 18h window: %s to %s", command_timestamp, cutoff)
+            else:
+                cutoff = datetime.now(timezone.utc) + timedelta(hours=18)
+                logger.info("⏱️ Using NOW() for 18h window (fallback): %s", cutoff)
 
             where_conditions = [
                 Match.status == "scheduled",
@@ -791,9 +806,7 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             # Step 3: dispatch agent analysis for each match
             from app.agents.pipeline import analyse_match
             opportunities_found = 0
-            matches_with_opps = []
-            matches_without_opps = []
-            incomplete_analysis = []
+            best_bet = None  # Track best EV opportunity across all matches
 
             for match in matches:
                 n = await analyse_match(match, db)
@@ -802,44 +815,29 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
                 # Reload match to get updated analysis_status and analysis_reason
                 await db.refresh(match)
 
-                # Raccogli opportunità create per questo match
+                # Find best EV opportunity for this match
                 opps_result = await db.execute(
                     select(BettingOpportunity)
                     .where(BettingOpportunity.match_id == match.id)
                     .where(BettingOpportunity.status == "pending")
+                    .order_by(BettingOpportunity.expected_value.desc())
                 )
                 match_opps = opps_result.scalars().all()
 
-                competition_name = match.competition.name if match.competition else "Unknown"
-
+                # Keep track of the single best EV across all matches
                 if match_opps:
-                    opps_data = []
-                    for opp in match_opps:
-                        opps_data.append({
-                            "tier": opp.tier or "C",
-                            "outcome": opp.outcome or "",
-                            "best_odds": float(opp.best_odds) if opp.best_odds else 0.0,
-                            "expected_value": float(opp.expected_value) if opp.expected_value else 0.0,
-                            "bookmaker": opp.bookmaker or "",
-                        })
-                    matches_with_opps.append({
-                        "name": match.display_name(),
-                        "competition": competition_name,
-                        "opportunities": opps_data,
-                    })
-                elif match.analysis_status == "complete":
-                    # Match analyzed completely but no opportunities found
-                    matches_without_opps.append({
-                        "name": match.display_name(),
-                        "competition": competition_name,
-                    })
-                elif match.analysis_status in ("incomplete", "no_data"):
-                    # Match with incomplete analysis — show the reason
-                    incomplete_analysis.append({
-                        "name": match.display_name(),
-                        "competition": competition_name,
-                        "analysis_reason": match.analysis_reason,
-                    })
+                    best_opp_in_match = match_opps[0]
+                    if best_bet is None or float(best_opp_in_match.expected_value) > best_bet.get("expected_value", 0):
+                        competition_name = match.competition.name if match.competition else "Unknown"
+                        best_bet = {
+                            "match_name": match.display_name(),
+                            "competition": competition_name,
+                            "market": best_opp_in_match.market or "",
+                            "outcome": best_opp_in_match.outcome or "",
+                            "best_odds": float(best_opp_in_match.best_odds) if best_opp_in_match.best_odds else 0.0,
+                            "expected_value": float(best_opp_in_match.expected_value) if best_opp_in_match.expected_value else 0.0,
+                            "bookmaker": best_opp_in_match.bookmaker or "",
+                        }
 
             # Update pipeline record
             finished_at = datetime.now(timezone.utc)
@@ -850,28 +848,18 @@ async def _run_daily_pipeline_async(sport: str | None = None) -> dict:
             await db.commit()
 
             duration_s = (finished_at - started_at).total_seconds()
-            total_opps = opportunities_found
 
-            # DEBUG: Log per capire quale path viene preso
-            logger.info("🔍 DEBUG: sport=%s, total_opps=%d, matches_with_opps=%d, matches_without_opps=%d",
-                        sport, total_opps, len(matches_with_opps), len(matches_without_opps))
-
-            # Notifica Telegram con report dettagliato
+            # Notifica Telegram con singola best bet
             if sport:
+                # Add duration to best_bet for logging
+                if best_bet:
+                    best_bet["duration_s"] = duration_s
+
                 from app.services.telegram_service import send_sport_analysis_report
-                await send_sport_analysis_report(
-                    sport=sport,
-                    matches_data={
-                        "total_matches": len(matches),
-                        "complete_with_opportunities": matches_with_opps,
-                        "complete_without_opportunities": matches_without_opps,
-                        "incomplete_analysis": incomplete_analysis,
-                        "duration_s": duration_s,
-                    }
-                )
+                await send_sport_analysis_report(sport=sport, best_bet=best_bet)
             else:
                 # Fallback per pipeline generale (senza sport specifico)
-                if total_opps == 0:
+                if opportunities_found == 0:
                     from app.services.telegram_service import send_no_bet_today
                     await send_no_bet_today(
                         matches_analysed=len(matches),

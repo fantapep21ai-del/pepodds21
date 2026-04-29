@@ -21,9 +21,6 @@ logger = logging.getLogger(__name__)
 _TIER_EMOJI = {"S": "🔥", "A": "✅", "B": "⚡", "C": "—"}
 _BET_TYPE_LABEL = {
     "singola": "Singola",
-    "scalata": "Scalata",
-    "doppia": "Doppia",
-    "multipla": "Multipla",
 }
 
 _SEP = "━━━━━━━━━━━━━━━━━━"
@@ -300,40 +297,22 @@ def _format_analysis_reason(reasons: list[str]) -> str:
     return " | ".join(readable)
 
 
-async def send_sport_analysis_report(sport: str, matches_data: dict) -> None:
+async def send_sport_analysis_report(sport: str, best_bet: dict | None) -> None:
     """
-    Report completo di analisi sportiva — organizzato per stato di analisi.
+    Send single best value bet for a sport.
 
     Args:
         sport: "football" | "basketball" | "tennis"
-        matches_data: {
-            "total_matches": int,
-            "complete_with_opportunities": [
-                {
-                    "name": str,
-                    "competition": str,
-                    "opportunities": [
-                        {
-                            "outcome": str,
-                            "best_odds": float,
-                            "expected_value": float,
-                            "bookmaker": str
-                        }
-                    ]
-                }
-            ],
-            "complete_without_opportunities": [
-                {"name": str, "competition": str}
-            ],
-            "incomplete_analysis": [
-                {
-                    "name": str,
-                    "competition": str,
-                    "analysis_reason": {"type": "incomplete", "reasons": [str, ...]}
-                }
-            ],
+        best_bet: {
+            "match_name": str,
+            "competition": str,
+            "market": str,
+            "outcome": str,
+            "best_odds": float,
+            "expected_value": float (e.g., 0.042 for 4.2%),
+            "bookmaker": str,
             "duration_s": float
-        }
+        } or None if no opportunities found
     """
     if _notifications_paused():
         return
@@ -343,63 +322,36 @@ async def send_sport_analysis_report(sport: str, matches_data: dict) -> None:
     sport_emoji = {"football": "⚽", "calcio": "⚽", "basketball": "🏀", "basket": "🏀", "tennis": "🎾"}.get(sport.lower(), "📊")
     sport_label = {"football": "CALCIO", "calcio": "CALCIO", "basketball": "BASKET", "basket": "BASKET", "tennis": "TENNIS"}.get(sport.lower(), sport.upper())
 
-    total_matches = matches_data.get("total_matches", 0)
-    duration = matches_data.get("duration_s", 0)
-    complete_with_opps = matches_data.get("complete_with_opportunities", [])
-    complete_without_opps = matches_data.get("complete_without_opportunities", [])
-    incomplete = matches_data.get("incomplete_analysis", [])
+    # No opportunities found
+    if not best_bet:
+        msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
+        msg += "❌ Nessuna opportunità trovata con EV sufficiente\n"
+        msg += f"\nRiprova con /{('ricerca_calcio' if sport.lower() in ['football', 'calcio'] else 'ricerca_nba' if sport.lower() in ['basketball', 'basket'] else 'ricerca_tennis')}\n"
+        try:
+            bot = Bot(token=settings.telegram_bot_token)
+            await bot.send_message(
+                chat_id=settings.telegram_chat_id,
+                text=msg,
+                parse_mode="HTML",
+            )
+            logger.info("No opportunities found for sport: %s", sport)
+        except Exception as exc:
+            logger.warning("Notification failed: %s", exc)
+        return
 
-    # Header
-    msg = f"{sport_emoji} <b>RICERCA {sport_label}</b> — {total_matches} partite\n{_SEP}\n"
+    # Format opportunity
+    market_label, outcome_label = _format_market_outcome(best_bet["market"], best_bet["outcome"], sport)
 
-    # Section 1: Complete analysis WITH opportunities
-    if complete_with_opps:
-        msg += f"<b>🎯 ANALIZZATE COMPLETAMENTE CON OPPORTUNITÀ ({len(complete_with_opps)})</b>\n"
-        for match_info in complete_with_opps[:10]:  # Max 10 per not overload
-            match_name = match_info.get("name", "?")
-            competition = match_info.get("competition", "")
-            opps = match_info.get("opportunities", [])
-            msg += f"\n<b>{match_name}</b> — {competition}\n"
-            for opp in opps[:2]:  # Max 2 opps per match
-                outcome = opp.get("outcome", "")
-                odds = opp.get("best_odds", 0)
-                ev = opp.get("expected_value", 0)
-                bookmaker = opp.get("bookmaker", "").replace("_", " ").title()
-                msg += f"  ✓ {outcome} @ {odds:.2f} ({ev:+.1%}) — {bookmaker}\n"
-        if len(complete_with_opps) > 10:
-            msg += f"\n  ... e {len(complete_with_opps) - 10} altri match\n"
-        msg += f"\n"
-
-    # Section 2: Complete analysis WITHOUT opportunities
-    if complete_without_opps:
-        msg += f"<b>❌ ANALIZZATE COMPLETAMENTE SENZA OPPORTUNITÀ ({len(complete_without_opps)})</b>\n"
-        for match_info in complete_without_opps[:15]:  # Max 15
-            match_name = match_info.get("name", "?")
-            competition = match_info.get("competition", "")
-            msg += f"  • {match_name} ({competition})\n"
-        if len(complete_without_opps) > 15:
-            msg += f"  ... e {len(complete_without_opps) - 15} altri match\n"
-        msg += f"\n"
-
-    # Section 3: Incomplete analysis
-    if incomplete:
-        msg += f"<b>⚠️ ANALISI INCOMPLETA ({len(incomplete)})</b>\n"
-        for match_info in incomplete[:8]:  # Max 8 (incomplete matches are edge cases)
-            match_name = match_info.get("name", "?")
-            competition = match_info.get("competition", "")
-            reason_data = match_info.get("analysis_reason", {})
-            reasons = reason_data.get("reasons", []) if reason_data else []
-            reason_str = _format_analysis_reason(reasons)
-            msg += f"  • {match_name} ({competition})\n"
-            msg += f"    ❌ {reason_str}\n"
-        if len(incomplete) > 8:
-            msg += f"\n  ... e {len(incomplete) - 8} altri match\n"
-        msg += f"\n"
-
-    # Footer
-    msg += f"{_SEP}\n"
-    msg += f"<b>RIEPILOGO:</b> {total_matches} match · {len(complete_with_opps)} con opportunità\n"
-    msg += f"<b>TEMPO ANALISI:</b> {duration:.2f}s\n"
+    msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
+    msg += "<b>Miglior opportunità trovata:</b>\n\n"
+    msg += f"  <b>{best_bet['match_name']}</b> — {best_bet['competition']}\n"
+    msg += f"  Market: {market_label}\n"
+    msg += f"  Outcome: {outcome_label}\n"
+    msg += f"  Quote: {best_bet['best_odds']:.2f} @ {best_bet['bookmaker'].replace('_', ' ').title()}\n"
+    msg += f"  EV: {best_bet['expected_value']:+.1%} ✓\n\n"
+    msg += "  <b>Importo: decidi tu</b>\n"
+    msg += f"\n{_SEP}\n"
+    msg += f"<b>TEMPO ANALISI:</b> {best_bet.get('duration_s', 0):.1f}s\n"
 
     try:
         bot = Bot(token=settings.telegram_bot_token)
@@ -408,9 +360,9 @@ async def send_sport_analysis_report(sport: str, matches_data: dict) -> None:
             text=msg,
             parse_mode="HTML",
         )
-        logger.info("Sport analysis report sent: %s (total: %d, with opps: %d)", sport, total_matches, len(complete_with_opps))
+        logger.info("Best bet sent for sport: %s (%s @ %.2f, EV: %.1f%%)", sport, best_bet["outcome"], best_bet["best_odds"], best_bet["expected_value"] * 100)
     except Exception as exc:
-        logger.warning("Sport analysis report failed: %s", exc)
+        logger.warning("Best bet notification failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

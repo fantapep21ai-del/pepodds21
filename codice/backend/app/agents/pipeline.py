@@ -44,12 +44,25 @@ UNCERTAINTY_GATE    = 0.70   # UncertaintyAgent: blocca se score ≥ 0.70
 AGENT_BLOCK_SIGNAL  = 0.30   # Blocca se segnale agenti < 0.30 con ≥2 agenti disponibili
 SHARP_BOOKMAKERS    = {"pinnacle", "betfair"}  # Reference markets for no-vig calculation
 
-# ── Range quote ───────────────────────────────────────────────────────────────
-ODDS_MIN          = 1.30   # sotto: scartata anche per scalata
-ODDS_MAX          = 5.00   # sopra: outsider estremo, scartata
-ODDS_SINGLE_MIN   = 1.70   # range ideale per singola
-ODDS_SINGLE_MAX   = 2.20   # sopra: singola accettabile ma con cautela
-ODDS_SCALATA_MAX  = 1.70   # sotto questa soglia → candidata scalata/combo
+# ── Range quote & EV threshold ────────────────────────────────────────────────
+ODDS_MIN          = 1.4    # sotto: escluded interamente
+ODDS_MAX          = 5.00   # sopra: outsider estremo
+
+
+def get_ev_threshold(odds: float) -> float | None:
+    """
+    Dynamic EV threshold based on odds range.
+
+    - Odds < 1.4: EXCLUDE (return None)
+    - Odds 1.4–3.0: min_ev = 3.5% (0.035)
+    - Odds > 3.0: min_ev = 8.0% (0.08)
+    """
+    if odds < ODDS_MIN:
+        return None  # Exclude
+    elif odds <= 3.0:
+        return 0.035  # 3.5%
+    else:
+        return 0.08   # 8.0%
 
 
 async def analyse_match(match: Match, db: AsyncSession) -> int:
@@ -160,6 +173,15 @@ async def analyse_match(match: Match, db: AsyncSession) -> int:
         return 0
 
     value_candidates = find_value_opportunities(pinnacle_probs, soft_odds, min_ev=0.035)
+
+    # Apply dynamic EV threshold based on odds range
+    filtered_candidates = []
+    for opp in value_candidates:
+        threshold = get_ev_threshold(opp["best_odds"])
+        if threshold is not None and opp["expected_value"] >= threshold:
+            filtered_candidates.append(opp)
+
+    value_candidates = filtered_candidates
 
     # ── 2.5. Assess data completeness ─────────────────────────────────────────
     # Evaluate what data was available for analysis before running agents

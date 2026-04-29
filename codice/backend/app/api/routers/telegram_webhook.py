@@ -63,9 +63,8 @@ async def register_bot_commands() -> None:
         from telegram import Bot, BotCommand
         bot = Bot(token=settings.telegram_bot_token)
         commands = [
-            BotCommand("ricerca", "Ricerca tutti gli sport"),
             BotCommand("ricerca_calcio", "Ricerca calcio"),
-            BotCommand("ricerca_nba", "Ricerca NBA"),
+            BotCommand("ricerca_nba", "Ricerca NBA + Playoffs"),
             BotCommand("ricerca_tennis", "Ricerca tennis"),
             BotCommand("oggi", "Partite di oggi"),
             BotCommand("opportunita", "Opportunità pendenti"),
@@ -114,14 +113,12 @@ async def telegram_webhook(request: Request):
     handlers = {
         "/start":           _handle_help,
         "/help":            _handle_help,
-        "/ricerca":         _handle_ricerca,
         "/ricerca_calcio":  _handle_ricerca_calcio,
         "/ricerca_nba":     _handle_ricerca_nba,
         "/ricerca_tennis":  _handle_ricerca_tennis,
         "/oggi":            _handle_oggi,
         "/opportunita":     _handle_opportunita,
         "/attesa":          _handle_attesa,
-        "/scalate":         _handle_scalate,
         "/bilancio":        _handle_bilancio,
         "/stats":           _handle_stats,
         "/status":          _handle_status,
@@ -549,39 +546,6 @@ async def _handle_attesa(chat_id: str) -> None:
     await _safe_send(bot, chat_id, "\n".join(lines))
 
 
-async def _handle_scalate(chat_id: str) -> None:
-    try:
-        from app.db.base import AsyncSessionLocal
-        from app.db.models.scalata import Scalata
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
-
-        async with AsyncSessionLocal() as db:
-            scalate = (await db.execute(
-                select(Scalata)
-                .where(Scalata.status == "attiva")
-                .options(selectinload(Scalata.steps))
-                .order_by(Scalata.created_at.desc())
-                .limit(5)
-            )).scalars().all()
-
-        if not scalate:
-            await _send(chat_id, "🎰 Nessuna scalata attiva al momento.")
-            return
-
-        lines = [f"🎰 <b>Scalate attive ({len(scalate)})</b>\n"]
-        for s in scalate:
-            pot = float(s.potential_win or 0)
-            lines.append(
-                f"\n<b>{s.total_steps} Step</b> — Fase {s.current_step}/{s.total_steps}\n"
-                f"Inizio: €{float(s.start_amount):.0f} → Potenziale: <b>€{pot:.0f}</b>"
-            )
-        await _send(chat_id, "\n".join(lines))
-    except Exception as exc:
-        logger.exception("Errore /scalate: %s", exc)
-        await _send(chat_id, "❌ Errore nel recupero delle scalate.")
-
-
 async def _handle_bilancio(chat_id: str) -> None:
     try:
         from app.db.base import AsyncSessionLocal
@@ -718,11 +682,6 @@ async def _handle_status(chat_id: str) -> None:
         await _send(chat_id, "❌ Errore nel recupero dello stato.")
 
 
-async def _handle_ricerca(chat_id: str) -> None:
-    """Ricerca globale: tutti gli sport (backward compat)."""
-    await _handle_ricerca_by_sport(chat_id, sport=None)
-
-
 async def _handle_ricerca_calcio(chat_id: str) -> None:
     """Ricerca calcio solo."""
     await _handle_ricerca_by_sport(chat_id, sport="football")
@@ -790,18 +749,21 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
 
         # Step 2: Run pipeline (analizza e invia alert con opportunità)
         import asyncio
+        from datetime import datetime, timezone
         logger.info("⏳ Attendendo 60s per completamento fetch...")
         await asyncio.sleep(60)  # Attendi il completamento fetch (odds + stats)
         logger.info("📦 Accodando task run_daily_pipeline(sport=%s)", sport)
         task2 = run_daily_pipeline.delay()
         logger.info("✅ Task accodato: %s", task2.id)
 
-        # Salva il sport in Redis con il task ID come chiave (bypass Celery params)
+        # Salva il sport e command_timestamp in Redis con il task ID come chiave
+        command_timestamp = datetime.now(timezone.utc).isoformat()
         r = aioredis.from_url(_cfg.redis_url_with_auth, decode_responses=True)
         async with r:
             sport_value = sport or "all"
             await r.setex(f"celery:sport:{task2.id}", 3600, sport_value)
-            logger.info("💾 Sport salvato in Redis: celery:sport:%s = %s", task2.id, sport_value)
+            await r.setex(f"celery:timestamp:{task2.id}", 3600, command_timestamp)
+            logger.info("💾 Salvo in Redis: sport=%s, timestamp=%s per task %s", sport_value, command_timestamp, task2.id)
 
         await _send(chat_id, "✅ Step 2/3: Analisi AI avviata.\n\n🎯 Risultati in arrivo a breve...")
 
