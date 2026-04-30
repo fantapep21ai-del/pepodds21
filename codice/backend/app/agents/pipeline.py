@@ -37,6 +37,8 @@ from app.agents.agents import (
 from app.agents.consensus import compute_no_vig, find_value_opportunities, compute_reliability
 from app.agents.tiers import classify as classify_tier
 from app.agents.synthesis import synthesize_agent_results
+from app.services.whoscored_client import WhoscoredClient
+from app.services.news_scraper import NewsScraperService
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +243,10 @@ async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> in
         len(value_candidates),
         max(c["ev"] for c in value_candidates) * 100,
     )
+
+    # ── 3.5. Fetch player stats + news (Whoscored + news sources) ──────────────
+    # Inline fetch durante l'analisi della partita — non in una ricerca separata
+    await _fetch_supplementary_stats(match, db)
 
     # ── 4. Tutti gli agenti in parallelo ─────────────────────────────────────
     # Carica pesi storici (Brier score) — agenti più calibrati pesano di più
@@ -768,6 +774,23 @@ async def _build_context(match: Match, db: AsyncSession, all_odds: list[dict]) -
             parts.append(f"{player_name}: {pts}pt/{reb}reb/{ast}ast (ultimi 5){b2b_str}")
         dunkest_note = " | ".join(parts)
 
+    # Whoscored: player-level stats (calcio) — agenti possono usare xG, xA, shots, etc.
+    whoscored_data = stats.get("whoscored", {})
+    whoscored_summary = None
+    if whoscored_data and (whoscored_data.get("home_players") or whoscored_data.get("away_players")):
+        n_home = len(whoscored_data.get("home_players", {}))
+        n_away = len(whoscored_data.get("away_players", {}))
+        whoscored_summary = f"Player stats: {n_home} home / {n_away} away (xG, xA, shots, pressures, tackles, passes available)"
+
+    # News: injuries, suspensions, form — agenti possono usare per adjustment
+    news_data = stats.get("news", {})
+    news_summary = None
+    if news_data and (news_data.get("home") or news_data.get("away")):
+        home_injuries = len(news_data.get("home", {}).get("injuries", []))
+        away_injuries = len(news_data.get("away", {}).get("injuries", []))
+        sources = ", ".join(news_data.get("sources_used", []))
+        news_summary = f"News aggregated: {home_injuries} home / {away_injuries} away injuries. Sources: {sources}"
+
     return {
         "match_name":        match.display_name(),
         "sport":             match.sport,
@@ -789,6 +812,11 @@ async def _build_context(match: Match, db: AsyncSession, all_odds: list[dict]) -
         "elo":               stats.get("elo"),
         "weather":           weather or None,
         "weather_note":      weather_note or None,
+        "whoscored":         whoscored_data,
+        "whoscored_summary": whoscored_summary,
+        "news_detail":       news_data,
+        "news_detail_summary": news_summary,
+        "research_metadata": stats.get("research_metadata", {}),
         "available_signals": ", ".join(available.keys()),
     }
 
@@ -838,6 +866,138 @@ def assess_analysis_completeness(
     if missing:
         return ("incomplete", missing)
     return ("complete", [])
+
+
+async def _fetch_supplementary_stats(match: Match, db: AsyncSession) -> None:
+    """
+    Fetch player-level stats + news inline durante l'analisi della partita.
+
+    Fonti:
+      - Whoscored: player xG, xA, shots, pressures, tackles, passes per partita
+      - News: Transfermarkt + Sofascore + ESPN per infortuni, squalifiche, notizie forma
+
+    Timeout: 2 minuti (best effort, graceful fallback)
+    Risultati salvati in match.raw_stats["whoscored"], ["news"], ["research_metadata"]
+    """
+    import time
+    start_time = time.time()
+
+    if not match.raw_stats:
+        match.raw_stats = {}
+
+    # Solo calcio e NBA hanno dati di giocatori rilevanti
+    if match.sport not in ("football", "basketball"):
+        return
+
+    try:
+        # Timeout di 2 minuti per tutto il fetch
+        async with asyncio.timeout(120):
+            whoscored_client = WhoscoredClient()
+            news_scraper = NewsScraperService()
+
+            # ── Whoscored: solo se disponibile per questo sport e tipo di partita
+            whoscored_data = {}
+            whoscored_status = "unavailable"
+
+            if match.sport == "football":
+                try:
+                    # Costruisci URL Whoscored dalla partita
+                    # Nota: in produzione, match.raw_stats potrebbe contenere un ID Whoscored
+                    # Per ora, skip se non disponibile
+                    if match.raw_stats.get("whoscored_url"):
+                        whoscored_url = match.raw_stats["whoscored_url"]
+                        whoscored_result = await whoscored_client.fetch_match_stats(whoscored_url)
+                        whoscored_status = whoscored_result.get("status", "unavailable")
+                        if whoscored_status == "complete":
+                            whoscored_data = {
+                                "home_players": whoscored_result.get("home_players", {}),
+                                "away_players": whoscored_result.get("away_players", {}),
+                                "match_id": whoscored_result.get("match_id"),
+                                "match_status": whoscored_result.get("match_status"),
+                            }
+                        logger.info(
+                            "Whoscored fetch for %s: %s (%d home, %d away players)",
+                            match.display_name(), whoscored_status,
+                            len(whoscored_result.get("home_players", {})),
+                            len(whoscored_result.get("away_players", {}))
+                        )
+                except Exception as e:
+                    logger.warning("Whoscored fetch failed for %s: %s", match.display_name(), e)
+                    whoscored_status = "failed"
+
+            # ── News: fetch per squadre home e away in parallelo
+            news_data = {"home": {}, "away": {}, "sources_used": []}
+            news_status = "unavailable"
+
+            try:
+                home_news_task = news_scraper.fetch_combined_team_news(
+                    match.home_team, match.match_date
+                )
+                away_news_task = news_scraper.fetch_combined_team_news(
+                    match.away_team, match.match_date
+                )
+                home_news, away_news = await asyncio.gather(
+                    home_news_task, away_news_task, return_exceptions=True
+                )
+
+                # Valida risultati
+                home_success = isinstance(home_news, dict) and home_news.get("injuries")
+                away_success = isinstance(away_news, dict) and away_news.get("injuries")
+
+                if home_success or away_success:
+                    news_status = "complete" if (home_success and away_success) else "partial"
+                    if home_success:
+                        news_data["home"] = home_news
+                    if away_success:
+                        news_data["away"] = away_news
+                    if isinstance(home_news, dict):
+                        news_data["sources_used"].extend(home_news.get("sources_used", []))
+                    if isinstance(away_news, dict):
+                        news_data["sources_used"].extend(away_news.get("sources_used", []))
+
+                logger.info(
+                    "News fetch for %s: %s (home: %d inj, away: %d inj)",
+                    match.display_name(), news_status,
+                    len(home_news.get("injuries", [])) if isinstance(home_news, dict) else 0,
+                    len(away_news.get("injuries", [])) if isinstance(away_news, dict) else 0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("News fetch timeout for %s", match.display_name())
+                news_status = "timeout"
+            except Exception as e:
+                logger.warning("News fetch failed for %s: %s", match.display_name(), e)
+                news_status = "failed"
+
+            # ── Research metadata: tracking completezza e timing
+            fetch_duration = time.time() - start_time
+            research_metadata = {
+                "whoscored_status": whoscored_status,
+                "news_status": news_status,
+                "fetch_time_s": round(fetch_duration, 2),
+                "sources_used": list(set(news_data.get("sources_used", []))),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            # ── Salva in match.raw_stats
+            match.raw_stats["whoscored"] = whoscored_data if whoscored_status == "complete" else {}
+            match.raw_stats["news"] = news_data if news_status != "unavailable" else {}
+            match.raw_stats["research_metadata"] = research_metadata
+
+    except asyncio.TimeoutError:
+        logger.error("Supplementary stats fetch timeout (2min) for %s", match.display_name())
+        match.raw_stats["research_metadata"] = {
+            "whoscored_status": "timeout",
+            "news_status": "timeout",
+            "fetch_time_s": 120.0,
+            "error": "fetch_timeout_2min",
+        }
+    except Exception as e:
+        logger.error("Supplementary stats fetch error for %s: %s", match.display_name(), e)
+        match.raw_stats["research_metadata"] = {
+            "whoscored_status": "error",
+            "news_status": "error",
+            "error": str(e),
+        }
 
 
 def _extract_uncertainty_score(result: AgentResult) -> float:

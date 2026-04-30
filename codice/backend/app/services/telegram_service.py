@@ -368,6 +368,17 @@ async def send_sport_analysis_report(sport: str, matches_report: list | None = N
         else:
             msg += "   ✓ Analisi completa\n"
 
+        # Research metadata: Whoscored + news status
+        research_meta = match.get("research_metadata", {})
+        if research_meta:
+            whoscored_status = research_meta.get("whoscored_status", "unavailable")
+            news_status = research_meta.get("news_status", "unavailable")
+            fetch_time = research_meta.get("fetch_time_s", 0)
+
+            # Show research status compactly
+            status_emoji = "✓" if whoscored_status == "complete" and news_status == "complete" else "⚠"
+            msg += f"   {status_emoji} Ricerca: Whoscored {whoscored_status} / Notizie {news_status} ({fetch_time:.1f}s)\n"
+
         # Show all singole for this match
         singole = match.get("singole", [])
         if singole:

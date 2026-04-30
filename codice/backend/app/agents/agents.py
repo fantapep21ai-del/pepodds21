@@ -33,14 +33,41 @@ class StatsAgent(BaseAgent):
         )
 
     def user_prompt(self, ctx: dict[str, Any]) -> str:
+        stats_section = f"MATCH STATISTICS:\n{self._format_stats(ctx.get('stats'))}"
+
+        # Whoscored: player-level data (calcio)
+        whoscored_section = ""
+        if ctx.get('whoscored_summary'):
+            whoscored_data = ctx.get('whoscored', {})
+            whoscored_section = f"\n\nWHOSCORED PLAYER STATS:\n{ctx.get('whoscored_summary')}"
+            # Top scorers/assisters per squadra
+            if whoscored_data.get('home_players'):
+                top_home = sorted(
+                    whoscored_data['home_players'].items(),
+                    key=lambda x: (x[1].get('xG', 0) + x[1].get('xA', 0)),
+                    reverse=True
+                )[:3]
+                whoscored_section += "\nHome team key players (by xG+xA):"
+                for name, stats in top_home:
+                    whoscored_section += f"\n  {name}: xG={stats.get('xG', 0):.2f} xA={stats.get('xA', 0):.2f}"
+
+            if whoscored_data.get('away_players'):
+                top_away = sorted(
+                    whoscored_data['away_players'].items(),
+                    key=lambda x: (x[1].get('xG', 0) + x[1].get('xA', 0)),
+                    reverse=True
+                )[:3]
+                whoscored_section += "\nAway team key players (by xG+xA):"
+                for name, stats in top_away:
+                    whoscored_section += f"\n  {name}: xG={stats.get('xG', 0):.2f} xA={stats.get('xA', 0):.2f}"
+
         return f"""Analyse this match and estimate win probabilities.
 
 Match: {ctx.get('match_name')}
 Competition: {ctx.get('competition')}
 Date: {ctx.get('match_date')}
 
-MATCH STATISTICS:
-{self._format_stats(ctx.get('stats'))}
+{stats_section}{whoscored_section}
 
 CURRENT ODDS (market implied probabilities for calibration):
 {self._format_odds(ctx.get('odds', []))}
@@ -179,15 +206,40 @@ class InjuryAgent(BaseAgent):
         )
 
     def user_prompt(self, ctx: dict[str, Any]) -> str:
+        # Use both generic injuries (from ingestion) + news detail (from Whoscored/news scraper)
+        injury_section = f"INJURY / SUSPENSION REPORT:\n{self._format_stats(ctx.get('injuries'))}"
+
+        # News detail from aggregated sources (Transfermarkt, Sofascore, ESPN)
+        news_detail_section = ""
+        news_detail = ctx.get('news_detail', {})
+        if news_detail and (news_detail.get('home') or news_detail.get('away')):
+            news_detail_section = f"\n\nNEWS DETAILS (aggregated from {', '.join(news_detail.get('sources_used', []))} ):"
+
+            # Home team injuries
+            if news_detail.get('home', {}).get('injuries'):
+                news_detail_section += "\nHOME TEAM injuries:"
+                for inj in news_detail['home']['injuries'][:5]:  # Top 5
+                    player = inj.get('player', 'Unknown')
+                    status = inj.get('status', 'unknown')
+                    conf = inj.get('confidence', 0.5)
+                    news_detail_section += f"\n  - {player}: {status} (confidence: {conf*100:.0f}%)"
+
+            # Away team injuries
+            if news_detail.get('away', {}).get('injuries'):
+                news_detail_section += "\nAWAY TEAM injuries:"
+                for inj in news_detail['away']['injuries'][:5]:  # Top 5
+                    player = inj.get('player', 'Unknown')
+                    status = inj.get('status', 'unknown')
+                    conf = inj.get('confidence', 0.5)
+                    news_detail_section += f"\n  - {player}: {status} (confidence: {conf*100:.0f}%)"
+
         return f"""Assess the injury and suspension situation.
 
 Match: {ctx.get('match_name')}
 
-INJURY / SUSPENSION REPORT:
-{self._format_stats(ctx.get('injuries'))}
+{injury_section}
 
-NEWS (relevant player status updates):
-{ctx.get('news_summary', 'No recent news available.')}
+{news_detail_section if news_detail_section else f"NEWS (relevant player status updates):\n{ctx.get('news_summary', 'No recent news available.')}"}
 
 Instructions:
 1. Identify the most impactful absences for each team.
@@ -215,14 +267,22 @@ class NewsAgent(BaseAgent):
         )
 
     def user_prompt(self, ctx: dict[str, Any]) -> str:
+        # Use both generic news + detailed aggregated news
+        news_section = f"RECENT NEWS (aggregated):\n{ctx.get('news_detail_summary', ctx.get('news_summary', 'No recent news available.'))}"
+
+        # Include research metadata for transparency
+        research_meta = ctx.get('research_metadata', {})
+        metadata_note = ""
+        if research_meta:
+            metadata_note = f"\nRESEARCH STATUS: whoscored={research_meta.get('whoscored_status', 'N/A')}, news={research_meta.get('news_status', 'N/A')}"
+
         return f"""Analyse qualitative factors for this match.
 
 Match: {ctx.get('match_name')}
 Competition: {ctx.get('competition')}
 Match date: {ctx.get('match_date')}
 
-RECENT NEWS:
-{ctx.get('news_summary', 'No recent news available.')}
+{news_section}{metadata_note}
 
 CONTEXTUAL FACTORS:
 - Is this a high-stakes match (title race, relegation, cup)? {ctx.get('high_stakes', 'unknown')}
