@@ -232,6 +232,8 @@ class InjuryAgent(BaseAgent):
                     status = inj.get('status', 'unknown')
                     conf = inj.get('confidence', 0.5)
                     news_detail_section += f"\n  - {player}: {status} (confidence: {conf*100:.0f}%)"
+        else:
+            news_detail_section = f"\n\nNEWS (relevant player status updates):\n{ctx.get('news_summary', 'No recent news available.')}"
 
         return f"""Assess the injury and suspension situation.
 
@@ -239,7 +241,7 @@ Match: {ctx.get('match_name')}
 
 {injury_section}
 
-{news_detail_section if news_detail_section else f"NEWS (relevant player status updates):\n{ctx.get('news_summary', 'No recent news available.')}"}
+{news_detail_section}
 
 Instructions:
 1. Identify the most impactful absences for each team.
