@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     # News API
     news_api_key: str = ""
 
+    # Firecrawl — web scraping API (for Whoscored, Transfermarkt, etc.)
+    firecrawl_api_key: str = ""
+
+    # News scraping configuration
+    transfermarkt_enabled: bool = True      # Injuries, suspensions
+    sofascore_enabled: bool = True          # Team info, form
+    espn_enabled: bool = True               # Latest news
+    news_fetch_timeout_s: int = 30          # Per source
+    news_freshness_hours: int = 24          # Only recent news
+
+    # Whoscored scraping configuration
+    whoscored_enabled: bool = True
+    whoscored_timeout_s: int = 20           # Per match
+    whoscored_cache_minutes: int = 30
+
     # Telegram
     telegram_bot_token: str
     telegram_chat_id: str
