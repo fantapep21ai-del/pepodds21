@@ -868,6 +868,47 @@ def assess_analysis_completeness(
     return ("complete", [])
 
 
+async def _discover_whoscored_url(match: Match) -> str | None:
+    """
+    Discover Whoscored match URL by searching.
+
+    Whoscored URL pattern: https://www.whoscored.com/matches/{match_id}/
+    Tries to find by searching for "home_team vs away_team" on Whoscored.
+
+    Returns URL or None if not found.
+    """
+    try:
+        from app.services.firecrawl_service import FirecrawlService
+
+        firecrawl = FirecrawlService()
+        search_url = f"https://www.whoscored.com/search?q={match.home_team.replace(' ', '+')}+vs+{match.away_team.replace(' ', '+')}"
+
+        # Map URLs found on search results
+        try:
+            result = await asyncio.wait_for(
+                firecrawl.map(url=search_url, include_subdomains=False, limit=5),
+                timeout=15.0
+            )
+
+            if result.get("success") and result.get("data", {}).get("urls"):
+                # Filter for match URLs (contain /matches/)
+                for url in result["data"]["urls"]:
+                    if "/matches/" in url:
+                        logger.debug("Discovered Whoscored URL for %s: %s", match.display_name(), url)
+                        return url
+
+        except asyncio.TimeoutError:
+            logger.debug("Whoscored URL discovery timeout for %s", match.display_name())
+        except Exception as e:
+            logger.debug("Whoscored URL discovery failed for %s: %s", match.display_name(), e)
+
+        return None
+
+    except Exception as e:
+        logger.debug("Whoscored discovery error for %s: %s", match.display_name(), e)
+        return None
+
+
 async def _fetch_supplementary_stats(match: Match, db: AsyncSession) -> None:
     """
     Fetch player-level stats + news inline durante l'analisi della partita.
@@ -901,11 +942,13 @@ async def _fetch_supplementary_stats(match: Match, db: AsyncSession) -> None:
 
             if match.sport == "football":
                 try:
-                    # Costruisci URL Whoscored dalla partita
-                    # Nota: in produzione, match.raw_stats potrebbe contenere un ID Whoscored
-                    # Per ora, skip se non disponibile
-                    if match.raw_stats.get("whoscored_url"):
-                        whoscored_url = match.raw_stats["whoscored_url"]
+                    whoscored_url = match.raw_stats.get("whoscored_url")
+
+                    # Se URL non disponibile, prova a scoprire dalla ricerca Whoscored
+                    if not whoscored_url:
+                        whoscored_url = await _discover_whoscored_url(match)
+
+                    if whoscored_url:
                         whoscored_result = await whoscored_client.fetch_match_stats(whoscored_url)
                         whoscored_status = whoscored_result.get("status", "unavailable")
                         if whoscored_status == "complete":
@@ -921,6 +964,9 @@ async def _fetch_supplementary_stats(match: Match, db: AsyncSession) -> None:
                             len(whoscored_result.get("home_players", {})),
                             len(whoscored_result.get("away_players", {}))
                         )
+                    else:
+                        logger.debug("Whoscored URL not found for %s", match.display_name())
+                        whoscored_status = "unavailable"
                 except Exception as e:
                     logger.warning("Whoscored fetch failed for %s: %s", match.display_name(), e)
                     whoscored_status = "failed"
