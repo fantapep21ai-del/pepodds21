@@ -840,6 +840,9 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
                     })
 
                 # Only include match in report if it has singole OR if analysis was incomplete
+                # Include research_metadata if available (from Whoscored + news fetch)
+                research_meta = (match.raw_stats or {}).get("research_metadata", {}) if match.raw_stats else {}
+
                 match_report = {
                     "match_name": match.display_name(),
                     "competition": match.competition.name if match.competition else "Unknown",
@@ -847,6 +850,11 @@ async def _run_daily_pipeline_async(sport: str | None = None, command_timestamp:
                     "analysis_reason": match.analysis_reason,
                     "singole": singole,
                 }
+
+                # Add research metadata if available (transparency on data completeness)
+                if research_meta:
+                    match_report["research_metadata"] = research_meta
+
                 matches_report.append(match_report)
 
             # Update pipeline record
