@@ -1,9 +1,9 @@
 """
 Tier classification engine for betting opportunities.
 
-Tier S: EV >= 8%  → massima priorità, singola
-Tier A: EV >= 5%  → alta priorità, singola
-Tier B: EV >= 3%  → normale, scalata se quota 1.30–1.80
+Tier S: EV >= 8%  → massima priorità
+Tier A: EV >= 5%  → alta priorità
+Tier B: EV >= 3%  → normale
 Tier C: EV < 3%   → scartata
 
 La soglia di incertezza è gestita a monte dall'UncertaintyAgent (gate 0.70 in pipeline.py).
@@ -19,7 +19,7 @@ class TierResult:
     tier: str             # S | A | B | C
     edge: float           # EV grezzo
     confidence: float     # 1 - uncertainty_score
-    bet_type: str         # singola | scalata | doppia | multipla
+    bet_type: str         # singola only
     confidence_level: str # alta | normale | bassa (UI label)
 
 
@@ -38,9 +38,7 @@ def classify(
     - EV >= 3%  → Tier B
     - altrimenti → Tier C (scartata)
 
-    Bet type:
-    - Quota 1.30–1.80 → candidata scalata (compounding sequenziale)
-    - Quota > 1.80    → singola
+    Bet type: sempre "singola" (niente multi-leg)
     """
     confidence = max(0.0, 1.0 - uncertainty_score)
     edge = expected_value

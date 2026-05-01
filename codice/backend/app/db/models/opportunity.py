@@ -46,7 +46,3 @@ class BettingOpportunity(Base):
 
     match: Mapped[Match] = relationship(back_populates="opportunities")  # noqa: F821
     bet: Mapped[Optional[Bet]] = relationship(back_populates="opportunity", uselist=False)  # noqa: F821
-    composite_bet: Mapped[Optional[CompositeBet]] = relationship(  # noqa: F821
-        "CompositeBet", back_populates="opportunity_legs",
-        foreign_keys=[composite_bet_id]
-    )

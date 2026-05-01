@@ -24,18 +24,13 @@ router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
 class ApproveRequest(BaseModel):
     stake_override: Optional[float] = None
-    bet_type_override: Optional[str] = None   # singola | doppia | multipla | scalata
+    bet_type_override: Optional[str] = None   # singola only
 
 
 class ModifyRequest(BaseModel):
     stake: Optional[float] = None
     bet_type: Optional[str] = None
     notes: Optional[str] = None
-
-
-class CombineRequest(BaseModel):
-    opportunity_ids: list[uuid.UUID]
-    stake: Optional[float] = None
 
 
 class OpportunityOut(BaseModel):
@@ -52,9 +47,6 @@ class OpportunityOut(BaseModel):
     confidence_level: str = "normale"
     tier: Optional[str] = "C"
     edge: Optional[float] = None
-    scalata_id: Optional[uuid.UUID] = None
-    scalata_step: Optional[int] = None
-    composite_bet_id: Optional[uuid.UUID] = None
     status: str
     rejection_reason: Optional[str]
     uncertainty_blocked: bool
@@ -252,128 +244,6 @@ async def approve_opportunity(
         "market": bet.market,
         "outcome": bet.outcome,
         "bet_type": opp.bet_type,
-    }
-
-
-@router.post("/combina")
-async def combina_in_attesa(
-    body: CombineRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Combina più opportunità in_attesa in una giocata doppia/multipla.
-    Crea un CompositeBet + un Bet per ogni leg.
-    """
-    from math import prod
-    from app.db.models.bet import Bet
-    from app.db.models.composite_bet import CompositeBet
-    from datetime import datetime, timezone
-
-    if len(body.opportunity_ids) < 2:
-        raise HTTPException(status_code=400, detail="Servono almeno 2 opportunità per una combinata")
-
-    opps = []
-    for oid in body.opportunity_ids:
-        opp = (await db.execute(
-            select(BettingOpportunity).where(BettingOpportunity.id == oid)
-        )).scalar_one_or_none()
-        if not opp:
-            raise HTTPException(status_code=404, detail=f"Opportunity {oid} non trovata")
-        if opp.status not in ("pending", "in_attesa"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Opportunity {oid} non disponibile (status: {opp.status})"
-            )
-        opps.append(opp)
-
-    # Verifica che le opportunità vengano da partite diverse (no correlazione)
-    match_ids = {str(o.match_id) for o in opps}
-    if len(match_ids) < len(opps):
-        raise HTTPException(
-            status_code=400,
-            detail="Non puoi combinare opportunità della stessa partita — le probabilità sono correlate"
-        )
-
-    combined_odds = round(prod(float(o.best_odds) for o in opps), 4)
-    combined_prob = round(prod(float(o.model_probability) for o in opps), 6)
-    ev = round(combined_prob * combined_odds - 1, 4)
-    n = len(opps)
-    bet_type = "doppia" if n == 2 else "multipla"
-
-    # EV minimo per combinata (soglia più alta perché varianza aumenta)
-    min_ev = 0.05 if n == 2 else 0.08
-    if ev < min_ev:
-        raise HTTPException(
-            status_code=400,
-            detail=f"EV combinato insufficiente ({ev:+.1%}). Minimo richiesto: {min_ev:+.0%} per {bet_type}"
-        )
-
-    if body.stake and body.stake > 0:
-        stake = body.stake
-    else:
-        stake = 20.0  # default — l'utente può modificarlo
-
-    composite = CompositeBet(
-        bet_type=bet_type,
-        status="open",
-        combined_odds=combined_odds,
-        combined_prob=combined_prob,
-        expected_value=ev,
-        stake=stake,
-        created_at=datetime.now(timezone.utc),
-        notes=f"Combinata manuale {n} gambe",
-    )
-    db.add(composite)
-    await db.flush()
-
-    for opp in opps:
-        leg_stake = round(stake / n, 2)
-        bet = Bet(
-            opportunity_id=opp.id,
-            bookmaker=opp.bookmaker,
-            market=opp.market,
-            outcome=opp.outcome,
-            odds=opp.best_odds,
-            stake=leg_stake,
-            status="open",
-            composite_bet_id=composite.id,
-        )
-        opp.status = "bet_placed"
-        opp.bet_type = bet_type
-        opp.composite_bet_id = composite.id
-        db.add(bet)
-
-    await db.commit()
-
-    # Sync → Telegram
-    try:
-        from app.services.telegram_service import _send, _SEP
-        names = []
-        for o in opps:
-            m = (await db.execute(select(Match).where(Match.id == o.match_id))).scalar_one_or_none()
-            names.append(m.display_name() if m else "—")
-        legs_str = "\n".join(
-            f"  {i+1}. {names[i]}: {o.outcome} @ {float(o.best_odds):.2f}"
-            for i, o in enumerate(opps)
-        )
-        msg = (
-            f"🔗 <b>Combinata {bet_type.capitalize()} confermata dal sito</b>\n"
-            f"{_SEP}\n"
-            f"{legs_str}\n"
-            f"Quota combinata: <b>{combined_odds:.2f}</b>\n"
-            f"EV: <b>{ev:+.1%}</b> · Stake: <b>€{stake:.0f}</b>"
-        )
-        await _send(msg)
-    except Exception as exc:
-        logger.warning("Telegram sync (combina) failed: %s", exc)
-
-    return {
-        "composite_bet_id": str(composite.id),
-        "bet_type": bet_type,
-        "combined_odds": combined_odds,
-        "expected_value": ev,
-        "stake": stake,
-        "legs": n,
     }
 
 
