@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     whoscored_timeout_s: int = 20           # Per match
     whoscored_cache_minutes: int = 30
 
+    # Quote freshness & pipeline thresholds
+    quote_freshness_hours: int = 6          # Only use quotes < 6h old
+    min_soft_bookmakers: int = 2            # Minimum soft bookmakers required
+
     # Telegram
     telegram_bot_token: str
     telegram_chat_id: str

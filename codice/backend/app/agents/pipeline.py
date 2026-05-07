@@ -67,6 +67,36 @@ def get_ev_threshold(odds: float) -> float | None:
         return 0.08   # 8.0%
 
 
+def _should_include_candidate(candidate: dict) -> tuple[bool, str | None]:
+    """
+    Centralized filtering logic for value candidates.
+
+    Checks:
+    - Odds range (ODDS_MIN to ODDS_MAX)
+    - Dynamic EV threshold
+
+    Returns: (include: bool, reason_if_skip: str | None)
+    """
+    best_odds = candidate["best_odds"]
+    ev = candidate["expected_value"]
+
+    # Range check
+    if best_odds < ODDS_MIN:
+        return False, f"odds < {ODDS_MIN}"
+    if best_odds > ODDS_MAX:
+        return False, f"odds > {ODDS_MAX}"
+
+    # Dynamic EV threshold
+    threshold = get_ev_threshold(best_odds)
+    if threshold is None:
+        return False, f"odds {best_odds:.2f} excluded by range"
+
+    if ev < threshold:
+        return False, f"EV {ev:+.1%} < threshold {threshold:+.1%}"
+
+    return True, None
+
+
 async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> int:
     """
     Pipeline completo per una partita.
@@ -87,8 +117,8 @@ async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> in
     if not odds_count:
         return 0
 
-    # ── 2. Carica e deduplica quote (solo quote fresche, ≤ 6 ore) ─────────────
-    freshness_cutoff = now - timedelta(hours=6)
+    # ── 2. Carica e deduplica quote (solo quote fresche) ────────────────────────
+    freshness_cutoff = now - timedelta(hours=settings.quote_freshness_hours)
     odds_result = await db.execute(
         select(MatchOdds)
         .where(MatchOdds.match_id == match.id)
@@ -186,10 +216,10 @@ async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> in
         except Exception as e:
             logger.warning("Failed to load CLV blacklist: %s", e)
 
-    # Filter soft odds: remove blacklisted bookmakers + require minimum 2 soft bookmakers
+    # Filter soft odds: remove blacklisted bookmakers + require minimum soft bookmakers
     soft_odds_filtered = [o for o in soft_odds if o["bookmaker"] not in blacklisted_bookmakers]
 
-    if len(soft_odds_filtered) < 2:
+    if len(soft_odds_filtered) < settings.min_soft_bookmakers:
         await db.execute(
             update(Match)
             .where(Match.id == match.id)
@@ -205,12 +235,17 @@ async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> in
 
     value_candidates = find_value_opportunities(pinnacle_probs, soft_odds_filtered, min_ev=0.035)
 
-    # Apply dynamic EV threshold based on odds range
+    # Apply centralized EV + odds range filtering
     filtered_candidates = []
     for opp in value_candidates:
-        threshold = get_ev_threshold(opp["best_odds"])
-        if threshold is not None and opp["expected_value"] >= threshold:
+        include, skip_reason = _should_include_candidate(opp)
+        if include:
             filtered_candidates.append(opp)
+        else:
+            logger.debug(
+                "Filtered out %s %s @ %.2f — %s",
+                opp["market"], opp["outcome"], opp["best_odds"], skip_reason
+            )
 
     value_candidates = filtered_candidates
 
@@ -282,28 +317,6 @@ async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> in
         ev            = candidate["ev"]
         n_confirming  = candidate["n_confirming"]
 
-        # ── Filtro range quote ────────────────────────────────────────────────
-        if best_odds_val < ODDS_MIN or best_odds_val > ODDS_MAX:
-            logger.info("Skipping %s %s @ %.2f — fuori range", market, outcome, best_odds_val)
-            continue
-
-        # ── Filtro EV per range odds: quote alte richiedono EV superiore ──────
-        # Quote 1.40-3.00: EV >= 3.5%
-        # Quote > 3.00: EV >= 8%
-        if best_odds_val > 3.00:
-            if ev < 0.08:
-                logger.info(
-                    "Skipping %s %s @ %.2f — quota > 3.00 richiede EV >= 8%% (attuale: %+.1f%%)",
-                    market, outcome, best_odds_val, ev * 100
-                )
-                continue
-        elif ev < 0.035:
-            logger.info(
-                "Skipping %s %s @ %.2f — EV insufficiente (%.1f%% < 3.5%%)",
-                market, outcome, best_odds_val, ev * 100
-            )
-            continue
-
         # ── Classificazione tier e bet_type ──────────────────────────────────
         tier_result = classify_tier(
             expected_value=ev,
@@ -322,10 +335,13 @@ async def analyse_match(match: Match, db: AsyncSession, redis_client=None) -> in
         # Raccoglie il reasoning degli agenti per l'alert Telegram
         agent_insights = _collect_agent_insights(specialist_results, market, outcome)
 
-        # Blocco per forte disaccordo agenti (richiede ≥2 agenti con dati sufficienti)
+        # ── Consensus block: agenti molto pessimisti rispetto a Pinnacle ──────────
+        # agent_signal: 0.0 (agenti pessimisti) ←→ 1.0 (agenti ottimisti) vs Pinnacle no-vig
+        # 0.30 threshold = agenti credono a valore ~30% inferiore. Segnale di "non fidarsi"
+        # Richiede ≥2 agenti per evitare blocchi su dati insufficienti (un solo agente down)
         if len(specialist_results) >= 2 and agent_signal < AGENT_BLOCK_SIGNAL:
             logger.info(
-                "Skipping %s %s @ %.2f — forte disaccordo agenti (signal=%.2f < %.2f)",
+                "Skipping %s %s @ %.2f — agent consensus too pessimistic (signal %.2f < threshold %.2f)",
                 market, outcome, best_odds_val, agent_signal, AGENT_BLOCK_SIGNAL,
             )
             continue
@@ -549,8 +565,23 @@ async def _run_agents_parallel(
     if match.sport == "football" and ctx.get("weather"):
         tasks.append(("weather", WeatherAgent().run(ctx)))
 
-    # UncertaintyAgent — sempre
-    tasks.append(("uncertainty", UncertaintyAgent().run(ctx)))
+    # UncertaintyAgent — sempre, con timeout separato (15s)
+    # Se exceed, fallback a score neutro (0.5)
+    async def _run_uncertainty_with_timeout():
+        try:
+            return await asyncio.wait_for(
+                UncertaintyAgent().run(ctx),
+                timeout=15.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("UncertaintyAgent timeout — fallback to neutral score (0.5)")
+            return AgentResult(
+                agent_name="uncertainty",
+                estimates=[],
+                error="timeout after 15s — neutral fallback"
+            )
+
+    tasks.append(("uncertainty", _run_uncertainty_with_timeout()))
 
     names  = [n for n, _ in tasks]
     coros  = [c for _, c in tasks]
@@ -650,12 +681,21 @@ async def _load_agent_weights(db: AsyncSession) -> dict[str, float]:
     """
     Carica i pesi degli agenti basati sulle performance storiche (Brier score).
     Agenti più calibrati nel tempo ricevono peso più alto nel signal computation.
-    Ritorna dict vuoto se non ci sono ancora dati (tutto peso 1.0 di default).
+    Ritorna dict con default weights 1.0 se non ci sono ancora dati storici.
     """
     try:
         result = await db.execute(select(AgentScore))
-        return {s.agent_name: float(s.weight) for s in result.scalars().all()}
-    except Exception:
+        weights = {s.agent_name: float(s.weight) for s in result.scalars().all()}
+
+        if weights:
+            logger.debug("Loaded %d agent weights from DB: %s", len(weights), weights)
+        else:
+            logger.debug("No agent weights in DB — using defaults (1.0 for all)")
+
+        return weights
+
+    except Exception as e:
+        logger.warning("Failed to load agent weights from DB: %s — using defaults", e)
         return {}
 
 
@@ -1120,16 +1160,65 @@ def _get_clv_blacklist_sync() -> set[str]:
     return {k.replace("clv:blacklist:", "") for k in keys if r.get(k) == "1"}
 
 
+def _get_clv_blacklist_from_db_sync(db_url: str) -> set[str]:
+    """
+    Fallback: query database per trovare bookmaker con CLV negativo.
+    Identifica bookmaker che storicamente hanno perso valore (CLV < -3%).
+    """
+    import sqlalchemy as sa
+    from app.db.models.bet import Bet
+
+    try:
+        engine = sa.create_engine(db_url, connect_args={"timeout": 5})
+        with engine.connect() as conn:
+            # Query: per ogni bookmaker, media CLV su scommesse chiuse
+            stmt = sa.select(
+                Bet.bookmaker,
+                sa.func.avg(Bet.clv).label("avg_clv"),
+                sa.func.count(Bet.id).label("bet_count")
+            ).where(
+                sa.and_(
+                    Bet.status != "open",
+                    Bet.clv.isnot(None)
+                )
+            ).group_by(
+                Bet.bookmaker
+            )
+
+            rows = conn.execute(stmt).fetchall()
+
+            # Blacklist: bookmaker con avg_clv < -3% e almeno 3 scommesse storiche
+            blacklist = {
+                row[0] for row in rows
+                if row[1] is not None and row[1] < -0.03 and row[2] >= 3
+            }
+
+            if blacklist:
+                logger.info("CLV blacklist from DB (fallback): %s", blacklist)
+            return blacklist
+
+    except Exception as e:
+        logger.warning("Failed to load CLV blacklist from DB (fallback): %s", e)
+        return set()
+
+
 async def _get_clv_blacklist() -> set[str]:
     """
     Legge da Redis la lista dei bookmaker blacklistati per CLV negativo.
-    Eseguita in un thread separato per non bloccare l'event loop async.
-    Restituisce set vuoto se Redis non disponibile (fail-safe).
+    Se Redis fallisce, fallback a query database.
+    Restituisce set vuoto se sia Redis che DB non disponibili.
     """
     try:
-        return await asyncio.to_thread(_get_clv_blacklist_sync)
-    except Exception:
-        return set()
+        result = await asyncio.to_thread(_get_clv_blacklist_sync)
+        if result:
+            logger.debug("CLV blacklist from Redis: %s", result)
+        return result
+    except Exception as e:
+        logger.warning("Redis CLV blacklist failed (%s) — falling back to database", str(e)[:100])
+
+        from app.config import settings
+        blacklist_from_db = await asyncio.to_thread(_get_clv_blacklist_from_db_sync, settings.database_url)
+        return blacklist_from_db
 
 
 def _compute_elo_agreement(

@@ -12,11 +12,14 @@ All sources are public (no authentication required).
 import asyncio
 import json
 import logging
+import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+from fuzzywuzzy import fuzz
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,35 @@ logger = logging.getLogger(__name__)
 class NewsScraperError(Exception):
     """Base exception for news scraper."""
     pass
+
+
+def _normalize_player_name(name: str) -> str:
+    """
+    Normalize player name for fuzzy matching.
+    Handles accents, case-insensitivity, extra spaces.
+    Example: "Cristiano Ronaldo dos Santos" → "cristiano ronaldo dos santos"
+    """
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    name = name.lower().strip()
+    name = " ".join(name.split())  # Collapse multiple spaces
+    return name
+
+
+def _fuzzy_match_player(name1: str, name2: str, threshold: int = 85) -> bool:
+    """
+    Fuzzy match two player names using WRatio (token+substring matching).
+    Returns True if similarity >= threshold (default 85%).
+
+    Examples:
+      - "Cristiano Ronaldo" vs "C. Ronaldo" → True (WRatio > 85%)
+      - "Mbappé" vs "Mbappe" → True (accent handled)
+      - "João Felix" vs "Joao Felix" → True (NFKD normalization)
+      - "John Smith" vs "Jane Doe" → False
+    """
+    norm1 = _normalize_player_name(name1)
+    norm2 = _normalize_player_name(name2)
+    similarity = fuzz.WRatio(norm1, norm2)
+    return similarity >= threshold
 
 
 class NewsScraperService:
@@ -256,13 +288,23 @@ class NewsScraperService:
             if isinstance(espn_data, dict) and espn_data.get("news_items"):
                 sources_used.append("espn")
 
-            # Deduplicate injuries by player name
-            seen_players = set()
+            # Deduplicate injuries by player name using fuzzy matching
+            # Handles name variants (Mbappé vs Mbappe, C. Ronaldo vs Cristiano Ronaldo, etc.)
             deduplicated_injuries = []
             for inj in all_injuries:
-                player_key = inj.get("player", "unknown").lower()
-                if player_key not in seen_players:
-                    seen_players.add(player_key)
+                player_name = inj.get("player", "unknown")
+                is_duplicate = False
+
+                for existing_inj in deduplicated_injuries:
+                    if _fuzzy_match_player(player_name, existing_inj.get("player", ""), threshold=85):
+                        logger.debug(
+                            "Injury dedup: '%s' matches existing '%s' (WRatio >= 85%%)",
+                            player_name, existing_inj.get("player")
+                        )
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
                     deduplicated_injuries.append(inj)
 
             result = {
