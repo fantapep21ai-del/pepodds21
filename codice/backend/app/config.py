@@ -20,16 +20,22 @@ class Settings(BaseSettings):
         """Returns Redis connection parameters for both AsyncRedis and redis.from_url()."""
         if self.redis_url:
             # Railway URL: redis://default:password@host:port/db
-            # Parse and extract components
+            # Parse and extract components (including username)
             from urllib.parse import urlparse
             parsed = urlparse(self.redis_url)
-            return {
+            kwargs = {
                 "host": parsed.hostname,
                 "port": parsed.port or 6379,
-                "password": parsed.password,
                 "db": int(parsed.path.lstrip('/')) if parsed.path else 0,
                 "decode_responses": True,
             }
+            # Add username if present (e.g., Railway uses "default")
+            if parsed.username:
+                kwargs["username"] = parsed.username
+            # Add password
+            if parsed.password:
+                kwargs["password"] = parsed.password
+            return kwargs
         # Local Docker: use password-based connection
         return {
             "host": "redis",
