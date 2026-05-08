@@ -777,36 +777,14 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         initial_msg = f"🔍 <b>Ricerca avviata</b>\n{sport_label}\n{count_msg}\n\n📋 <b>Partite in analisi:</b>\n{matches_str}\n\n⏳ Analisi in corso..."
         await _send(chat_id, initial_msg)
 
-        from app.workers.tasks import fetch_complete_sport_data, run_daily_pipeline
+        from app.workers.tasks import fetch_complete_sport_data
 
         # Step 1: Fetch completo (odds + stats arricchiti per lo sport)
+        # NON triggerato automaticamente — solo fetch dei dati
         logger.info("📦 Accodando task fetch_complete_sport_data(sport=%s)", sport)
         task1 = fetch_complete_sport_data.delay(sport=sport)
         logger.info("✅ Task accodato: %s", task1.id)
-
-        # Step 2: Run pipeline (dopo il fetch)
-        import asyncio
-        logger.info("⏳ Attendendo 60s per completamento fetch...")
-        await asyncio.sleep(60)  # Attendi il completamento fetch (odds + stats)
-        logger.info("📦 Accodando task run_daily_pipeline(sport=%s)", sport)
-        task2 = run_daily_pipeline.delay()
-        logger.info("✅ Task pipeline accodato: %s", task2.id)
-
-        # Salva il sport e command_timestamp in Redis con il task ID come chiave
-        from datetime import datetime, timezone
-        command_timestamp = datetime.now(timezone.utc).isoformat()
-        import redis.asyncio as aioredis
-        kwargs = _cfg.get_redis_connection_kwargs()
-        r = aioredis.Redis(**kwargs)
-        try:
-            sport_value = sport or "all"
-            await r.setex(f"celery:sport:{task2.id}", 3600, sport_value)
-            await r.setex(f"celery:timestamp:{task2.id}", 3600, command_timestamp)
-            logger.info("💾 Salvo in Redis: sport=%s, timestamp=%s per task %s", sport_value, command_timestamp, task2.id)
-        finally:
-            await r.aclose()
-
-        logger.info("✅ Ricerca avviata con successo (sport=%s, task=%s)", sport, task2.id)
+        logger.info("✅ Ricerca avviata con successo (sport=%s, task=%s)", sport, task1.id)
 
     except Exception as exc:
         logger.exception("❌ Errore ricerca (sport=%s): %s", sport, exc)
