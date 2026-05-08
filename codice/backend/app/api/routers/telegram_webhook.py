@@ -719,11 +719,18 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         }
         sport_label = sport_labels.get(sport, "Sport")
 
-        # Counter: sport-specific monthly tracking
-        import redis.asyncio as aioredis
+        # Lock: previeni ricerche duplicate
         kwargs = _cfg.get_redis_connection_kwargs()
         r = aioredis.Redis(**kwargs)
         try:
+            lock_key = f"ricerca:lock:{chat_id}:{sport or 'all'}"
+            is_locked = await r.set(lock_key, "1", nx=True, ex=120)  # 2 min lock
+            if not is_locked:
+                logger.warning("⚠️ Ricerca già in corso per sport=%s, scarto", sport)
+                await _send(chat_id, "⏳ Una ricerca è già in corso. Attendi il risultato.")
+                return
+
+            # Counter: sport-specific monthly tracking
             month_key = f"ricerche:{sport or 'all'}:{datetime.now().strftime('%Y-%m')}"
             count = await r.incr(month_key)
             await r.expire(month_key, 86400 * 31)  # expire in 31 days
