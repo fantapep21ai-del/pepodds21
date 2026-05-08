@@ -28,7 +28,7 @@ class OddsFixturesClient:
             "soccer_uefa_europa_league",    # Europa League
         ],
         "basketball": [
-            "basketball_nba",  # Include playoffs (no separate key)
+            "basketball_nba",  # Includes regular season, playoffs, and finals (single key)
         ],
         "tennis": [
             "tennis_atp_italian_open",   # ATP Masters
