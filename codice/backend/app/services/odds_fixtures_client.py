@@ -17,11 +17,11 @@ class OddsFixturesClient:
 
     BASE_URL = "https://api.the-odds-api.com/v4"
 
-    # Mapping sport -> sport_key su The Odds API
+    # Mapping sport -> sport_key su The Odds API (key esatti da API response)
     SPORT_KEYS = {
         "football": [
             "soccer_epl",           # Premier League
-            "soccer_italy",         # Serie A
+            "soccer_italy_serie_a", # Serie A (NOT soccer_italy!)
             "soccer_germany_bundesliga",  # Bundesliga
             "soccer_spain_la_liga", # La Liga
             "soccer_france_ligue_one",  # Ligue 1
@@ -31,12 +31,13 @@ class OddsFixturesClient:
             "soccer_uefa_europa_league",  # Europa League
         ],
         "basketball": [
-            "basketball_nba",
-            "basketball_nba_playoffs",
+            "basketball_nba",  # Include playoffs (no separate key)
         ],
         "tennis": [
-            "tennis_atp",
-            "tennis_wta",
+            "tennis_atp_italian_open",   # ATP Masters
+            "tennis_wta_italian_open",   # WTA Masters
+            # Note: The Odds API has limited tennis coverage
+            # For Grand Slams/Masters, must query tournament-specific keys
         ],
     }
 
@@ -160,7 +161,7 @@ class OddsFixturesClient:
         """Estrae il nome della competizione dal sport_key."""
         mapping = {
             "soccer_epl": "Premier League",
-            "soccer_italy": "Serie A",
+            "soccer_italy_serie_a": "Serie A",
             "soccer_germany_bundesliga": "Bundesliga",
             "soccer_spain_la_liga": "La Liga",
             "soccer_france_ligue_one": "Ligue 1",
@@ -169,8 +170,7 @@ class OddsFixturesClient:
             "soccer_uefa_champs_league": "UEFA Champions League",
             "soccer_uefa_europa_league": "UEFA Europa League",
             "basketball_nba": "NBA",
-            "basketball_nba_playoffs": "NBA Playoffs",
-            "tennis_atp": "ATP",
-            "tennis_wta": "WTA",
+            "tennis_atp_italian_open": "ATP Italian Open",
+            "tennis_wta_italian_open": "WTA Italian Open",
         }
         return mapping.get(sport_key, "Unknown")
