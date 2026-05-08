@@ -12,12 +12,14 @@ class Settings(BaseSettings):
     postgres_password: str = "change_me"
     postgres_db: str = "sports_quant_fund"
 
-    # Redis — NON usare redis_url direttamente: manca autenticazione.
-    # Usare SEMPRE settings.redis_url_with_auth
-    redis_password: str = ""
+    # Redis
+    redis_url: str = ""  # Full connection string (Railway)
+    redis_password: str = ""  # Password only (Docker local)
 
     @property
     def redis_url_with_auth(self) -> str:
+        if self.redis_url:
+            return self.redis_url
         if self.redis_password:
             return f"redis://:{self.redis_password}@redis:6379/0"
         return "redis://redis:6379/0"
