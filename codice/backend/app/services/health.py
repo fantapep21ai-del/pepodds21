@@ -34,10 +34,8 @@ async def run_health_check(db) -> dict:
 
     # ── Redis check ───────────────────────────────────────────────────────────
     try:
-        from redis.asyncio import Redis
-        kwargs = settings.get_redis_connection_kwargs()
-        kwargs["socket_connect_timeout"] = 2
-        r = Redis(**kwargs)
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.get_redis_url())
         await r.ping()
         await r.aclose()
         services["redis"] = "ok"

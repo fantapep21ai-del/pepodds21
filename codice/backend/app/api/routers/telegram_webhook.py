@@ -720,12 +720,15 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         sport_label = sport_labels.get(sport, "Sport")
 
         # Counter: sport-specific monthly tracking
-        from redis.asyncio import Redis
-        r = Redis(**_cfg.get_redis_connection_kwargs())
-        async with r:
+        import redis.asyncio as aioredis
+        kwargs = _cfg.get_redis_connection_kwargs()
+        r = aioredis.Redis(**kwargs)
+        try:
             month_key = f"ricerche:{sport or 'all'}:{datetime.now().strftime('%Y-%m')}"
             count = await r.incr(month_key)
             await r.expire(month_key, 86400 * 31)  # expire in 31 days
+        finally:
+            await r.aclose()
 
         # Limiti basati su The Odds API: Free=500 req/mese, Essential=20,000/mese
         # Una ricerca calcio ~8 req, nba/tennis ~2 req
@@ -759,13 +762,16 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
 
         # Salva il sport e command_timestamp in Redis con il task ID come chiave
         command_timestamp = datetime.now(timezone.utc).isoformat()
-        from redis.asyncio import Redis
-        r = Redis(**_cfg.get_redis_connection_kwargs())
-        async with r:
+        import redis.asyncio as aioredis
+        kwargs = _cfg.get_redis_connection_kwargs()
+        r = aioredis.Redis(**kwargs)
+        try:
             sport_value = sport or "all"
             await r.setex(f"celery:sport:{task2.id}", 3600, sport_value)
             await r.setex(f"celery:timestamp:{task2.id}", 3600, command_timestamp)
             logger.info("💾 Salvo in Redis: sport=%s, timestamp=%s per task %s", sport_value, command_timestamp, task2.id)
+        finally:
+            await r.aclose()
 
         await _send(chat_id, "✅ Step 2/3: Analisi AI avviata.\n\n🎯 Risultati in arrivo a breve...")
 
