@@ -823,11 +823,23 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
 
                 await db.commit()
 
-                # Step 2: Fetch quote per lo sport richiesto (The Odds API)
+                # Step 2: Fetch quote per lo sport richiesto
                 svc = IngestionService(db)
                 logger.info("📦 Fetching odds per sport=%s", sport)
                 fetch_result = await svc.ingest_all_odds(sport=sport)
                 logger.info("✅ Fetch completato: %s", fetch_result)
+
+                # Step 2b: Per tennis, aggiungi quote da Sofascore (source alternativa)
+                if sport == "tennis":
+                    logger.info("🎾 Fetching additional tennis odds from Sofascore...")
+                    try:
+                        from app.services.sofascore_client import SofascoreClient
+                        sofascore = SofascoreClient()
+                        sofascore_matches = await sofascore.fetch_tennis_odds(hours_lookahead=18)
+                        logger.info("✅ Sofascore: %d tennis matches con quote", len(sofascore_matches))
+                        # TODO: Merge sofascore odds into match_odds table
+                    except Exception as e:
+                        logger.warning("⚠️ Sofascore fetch failed: %s", e)
 
                 # Ora queryiamo le partite che sono state appena caricate
                 now = dt.now(tz.utc)
