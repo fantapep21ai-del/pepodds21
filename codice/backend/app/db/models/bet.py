@@ -38,15 +38,7 @@ class Bet(Base):
     closing_odds: Mapped[Optional[float]] = mapped_column(Numeric(8, 3))   # odds at market close
     clv: Mapped[Optional[float]] = mapped_column(Numeric(8, 4))            # (closing/placed - 1) * 100
 
-    # Composite bet linkage
-    composite_bet_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("composite_bets.id"), nullable=True
-    )
-
     # Actual odds confirmed at placement (può differire da best_odds se cambiano velocemente)
     actual_odds: Mapped[Optional[float]] = mapped_column(Numeric(8, 3))
 
     opportunity: Mapped[BettingOpportunity] = relationship(back_populates="bet")  # noqa: F821
-    composite_bet: Mapped[Optional[CompositeBet]] = relationship(  # noqa: F821
-        "CompositeBet", back_populates="legs", foreign_keys=[composite_bet_id]
-    )
