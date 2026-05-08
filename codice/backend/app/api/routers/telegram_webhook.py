@@ -761,42 +761,25 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         initial_msg = f"🔍 <b>Ricerca avviata</b>\n{sport_label}\n{count_msg}\n\n📥 <b>Caricamento partite...</b>"
         await _send(chat_id, initial_msg)
 
-        # Fetch quote sincrono (tramite ingestion service)
+        # Fetch quote sincrono (tramite The Odds API)
         matches_for_report = []
         try:
             async with AsyncSessionLocal() as db:
                 from app.db.models.match import Match, Competition
                 from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from app.services.odds_fixtures_client import OddsFixturesClient
 
-                # Step 1: Fetcha partite dallo sport specifico (da API pubbliche)
-                fixtures = []
-
-                if sport == "football":
-                    logger.info("📦 Caricando partite calcio da Football-Data.org...")
-                    from app.services.football_data_client import FootballDataOrgClient
-                    client = FootballDataOrgClient()
-                    fixtures = await client.fetch_upcoming_matches(hours_lookahead=18)
-                    logger.info("✅ Football-Data: %d partite", len(fixtures))
-
-                elif sport == "basketball":
-                    logger.info("📦 Caricando partite NBA da ESPN...")
-                    from app.services.nba_fixtures_client import NBAFixturesClient
-                    client = NBAFixturesClient()
-                    fixtures = await client.fetch_upcoming_matches(hours_lookahead=18)
-                    logger.info("✅ ESPN NBA: %d partite", len(fixtures))
-
-                elif sport == "tennis":
-                    logger.info("📦 Caricando partite tennis da Tennis API...")
-                    from app.services.tennis_fixtures_client import TennisFixturesClient
-                    client = TennisFixturesClient()
-                    fixtures = await client.fetch_upcoming_matches(hours_lookahead=18)
-                    logger.info("✅ Tennis API: %d partite", len(fixtures))
+                # Step 1: Fetcha partite direttamente da The Odds API
+                logger.info("📦 Caricando partite %s da The Odds API...", sport or "all")
+                odds_client = OddsFixturesClient()
+                fixtures = await odds_client.fetch_upcoming_matches(sport=sport, hours_lookahead=18)
+                logger.info("✅ The Odds API: %d partite trovate", len(fixtures))
 
                 # Step 2: Salva le partite nel DB (upsert)
                 for fixture in fixtures:
                     try:
                         # Crea/cerca la competizione
-                        comp_name = fixture.get("competition") or fixture.get("tournament") or "Unknown"
+                        comp_name = fixture.get("competition", "Unknown")
                         comp_result = await db.execute(
                             select(Competition).where(
                                 (Competition.name == comp_name) & (Competition.sport == sport)
@@ -814,8 +797,8 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
                             await db.flush()
 
                         # Upsert match
-                        home_team = fixture.get("home_team") or fixture.get("player_a") or "?"
-                        away_team = fixture.get("away_team") or fixture.get("player_b") or "?"
+                        home_team = fixture.get("home_team", "?")
+                        away_team = fixture.get("away_team", "?")
 
                         await db.execute(
                             pg_insert(Match).values(
@@ -824,8 +807,6 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
                                 sport=sport,
                                 home_team=home_team,
                                 away_team=away_team,
-                                player_a=fixture.get("player_a"),  # Tennis
-                                player_b=fixture.get("player_b"),  # Tennis
                                 match_date=fixture["match_date"],
                                 status=fixture.get("status", "scheduled").lower(),
                             ).on_conflict_do_update(
