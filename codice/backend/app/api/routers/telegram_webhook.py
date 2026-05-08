@@ -765,18 +765,55 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         matches_for_report = []
         try:
             async with AsyncSessionLocal() as db:
-                # Step 1: Carica competizioni da The Odds API (se non già in DB)
-                logger.info("📦 Sincronizzando competizioni...")
-                from app.services.odds_fetcher import OddsAPIClient
-                odds_client = OddsAPIClient()
-                try:
-                    sports_list = await odds_client.list_sports()
-                    logger.info("✅ The Odds API: trovati %d sport", len(sports_list))
-                except Exception as e:
-                    logger.warning("⚠️ The Odds API list_sports failed: %s", e)
-                    sports_list = []
+                # Step 1: Per calcio, fetcha partite da Football-Data.org (gratuito, affidabile)
+                if sport == "football":
+                    logger.info("📦 Caricando partite da Football-Data.org...")
+                    from app.services.football_data_client import FootballDataOrgClient
+                    fd_client = FootballDataOrgClient()
+                    fd_matches = await fd_client.fetch_upcoming_matches(hours_lookahead=18)
+                    logger.info("✅ Football-Data: %d partite trovate", len(fd_matches))
 
-                # Step 2: Fetch quote per lo sport richiesto
+                    # Salva le partite nel DB (upsert)
+                    from app.db.models.match import Match, Competition
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    for fm in fd_matches:
+                        # Crea/cerca la competizione
+                        comp_result = await db.execute(
+                            select(Competition).where(Competition.name == fm["competition"])
+                        )
+                        comp = comp_result.scalar()
+                        if not comp:
+                            comp = Competition(
+                                name=fm["competition"],
+                                sport="football",
+                                tier="A",
+                                weight=0.9,
+                            )
+                            db.add(comp)
+                            await db.flush()
+
+                        # Upsert match
+                        await db.execute(
+                            pg_insert(Match).values(
+                                external_id=fm["id"],
+                                competition_id=comp.id,
+                                sport="football",
+                                home_team=fm["home_team"],
+                                away_team=fm["away_team"],
+                                match_date=fm["match_date"],
+                                status="scheduled" if fm["status"] == "SCHEDULED" else fm["status"].lower(),
+                            ).on_conflict_do_update(
+                                index_elements=["external_id"],
+                                set_={
+                                    "match_date": fm["match_date"],
+                                    "status": "scheduled" if fm["status"] == "SCHEDULED" else fm["status"].lower(),
+                                },
+                            )
+                        )
+                    await db.commit()
+
+                # Step 2: Fetch quote per lo sport richiesto (The Odds API)
                 svc = IngestionService(db)
                 logger.info("📦 Fetching odds per sport=%s", sport)
                 fetch_result = await svc.ingest_all_odds(sport=sport)
