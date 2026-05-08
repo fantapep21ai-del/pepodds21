@@ -765,28 +765,48 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         matches_for_report = []
         try:
             async with AsyncSessionLocal() as db:
-                # Step 1: Per calcio, fetcha partite da Football-Data.org (gratuito, affidabile)
+                from app.db.models.match import Match, Competition
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                # Step 1: Fetcha partite dallo sport specifico (da API pubbliche)
+                fixtures = []
+
                 if sport == "football":
-                    logger.info("📦 Caricando partite da Football-Data.org...")
+                    logger.info("📦 Caricando partite calcio da Football-Data.org...")
                     from app.services.football_data_client import FootballDataOrgClient
-                    fd_client = FootballDataOrgClient()
-                    fd_matches = await fd_client.fetch_upcoming_matches(hours_lookahead=18)
-                    logger.info("✅ Football-Data: %d partite trovate", len(fd_matches))
+                    client = FootballDataOrgClient()
+                    fixtures = await client.fetch_upcoming_matches(hours_lookahead=18)
+                    logger.info("✅ Football-Data: %d partite", len(fixtures))
 
-                    # Salva le partite nel DB (upsert)
-                    from app.db.models.match import Match, Competition
-                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+                elif sport == "basketball":
+                    logger.info("📦 Caricando partite NBA da ESPN...")
+                    from app.services.nba_fixtures_client import NBAFixturesClient
+                    client = NBAFixturesClient()
+                    fixtures = await client.fetch_upcoming_matches(hours_lookahead=18)
+                    logger.info("✅ ESPN NBA: %d partite", len(fixtures))
 
-                    for fm in fd_matches:
+                elif sport == "tennis":
+                    logger.info("📦 Caricando partite tennis da Tennis API...")
+                    from app.services.tennis_fixtures_client import TennisFixturesClient
+                    client = TennisFixturesClient()
+                    fixtures = await client.fetch_upcoming_matches(hours_lookahead=18)
+                    logger.info("✅ Tennis API: %d partite", len(fixtures))
+
+                # Step 2: Salva le partite nel DB (upsert)
+                for fixture in fixtures:
+                    try:
                         # Crea/cerca la competizione
+                        comp_name = fixture.get("competition") or fixture.get("tournament") or "Unknown"
                         comp_result = await db.execute(
-                            select(Competition).where(Competition.name == fm["competition"])
+                            select(Competition).where(
+                                (Competition.name == comp_name) & (Competition.sport == sport)
+                            )
                         )
                         comp = comp_result.scalar()
                         if not comp:
                             comp = Competition(
-                                name=fm["competition"],
-                                sport="football",
+                                name=comp_name,
+                                sport=sport,
                                 tier="A",
                                 weight=0.9,
                             )
@@ -794,24 +814,33 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
                             await db.flush()
 
                         # Upsert match
+                        home_team = fixture.get("home_team") or fixture.get("player_a") or "?"
+                        away_team = fixture.get("away_team") or fixture.get("player_b") or "?"
+
                         await db.execute(
                             pg_insert(Match).values(
-                                external_id=fm["id"],
+                                external_id=fixture.get("id", ""),
                                 competition_id=comp.id,
-                                sport="football",
-                                home_team=fm["home_team"],
-                                away_team=fm["away_team"],
-                                match_date=fm["match_date"],
-                                status="scheduled" if fm["status"] == "SCHEDULED" else fm["status"].lower(),
+                                sport=sport,
+                                home_team=home_team,
+                                away_team=away_team,
+                                player_a=fixture.get("player_a"),  # Tennis
+                                player_b=fixture.get("player_b"),  # Tennis
+                                match_date=fixture["match_date"],
+                                status=fixture.get("status", "scheduled").lower(),
                             ).on_conflict_do_update(
                                 index_elements=["external_id"],
                                 set_={
-                                    "match_date": fm["match_date"],
-                                    "status": "scheduled" if fm["status"] == "SCHEDULED" else fm["status"].lower(),
+                                    "match_date": fixture["match_date"],
+                                    "status": fixture.get("status", "scheduled").lower(),
                                 },
                             )
                         )
-                    await db.commit()
+                    except Exception as e:
+                        logger.warning("Failed to save fixture: %s", e)
+                        continue
+
+                await db.commit()
 
                 # Step 2: Fetch quote per lo sport richiesto (The Odds API)
                 svc = IngestionService(db)
