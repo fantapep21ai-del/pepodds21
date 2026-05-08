@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     @property
     def redis_url_with_auth(self) -> str:
         if self.redis_url:
-            return self.redis_url
+            # Railway URL format: redis://default:password@host:port/db
+            # Python-redis expects: redis://:password@host:port/db (no username)
+            url = self.redis_url.replace("redis://default:", "redis://:")
+            return url
         if self.redis_password:
             return f"redis://:{self.redis_password}@redis:6379/0"
         return "redis://redis:6379/0"
