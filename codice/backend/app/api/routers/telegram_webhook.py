@@ -793,6 +793,7 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         logger.info("✅ Task pipeline accodato: %s", task2.id)
 
         # Salva il sport e command_timestamp in Redis con il task ID come chiave
+        from datetime import datetime, timezone
         command_timestamp = datetime.now(timezone.utc).isoformat()
         import redis.asyncio as aioredis
         kwargs = _cfg.get_redis_connection_kwargs()
