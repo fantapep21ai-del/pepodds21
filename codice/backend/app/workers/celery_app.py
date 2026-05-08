@@ -23,31 +23,6 @@ celery_app.conf.update(
 )
 
 # ── Beat schedule ──────────────────────────────────────────────────────────────
-# NOTA: Fetch (odds, stats, competizioni) sono on-demand via comandi Telegram.
-# Rimangono SOLO task di servizio e monitoring (health-check, polling).
-celery_app.conf.beat_schedule = {
-
-    # ── Health check ogni 5 minuti ────────────────────────────────────────────
-    "health-check": {
-        "task": "app.workers.tasks.run_health_check",
-        "schedule": crontab(minute="*/5"),
-    },
-
-    # ── Settlement ogni 2 ore (scommesse finite) ──────────────────────────────
-    "controlla": {
-        "task": "app.workers.tasks.controlla",
-        "schedule": crontab(minute=0, hour="*/2"),
-    },
-
-    # ── CLV update ogni 6 ore ─────────────────────────────────────────────────
-    "update-clv": {
-        "task": "app.workers.tasks.update_clv",
-        "schedule": crontab(minute=0, hour="*/6"),
-    },
-
-    # ── CLV calibration ogni lunedì alle 08:00 UTC ────────────────────────────
-    "calibrate-clv-weekly": {
-        "task": "app.workers.tasks.calibrate_clv",
-        "schedule": crontab(hour=8, minute=0, day_of_week=1),
-    },
-}
+# DISABILITATO: Tutte le ricerche sono on-demand via Telegram commands SOLAMENTE.
+# Nessun task automatico.
+celery_app.conf.beat_schedule = {}
