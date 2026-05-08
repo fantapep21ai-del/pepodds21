@@ -32,9 +32,9 @@ _PAUSE_REDIS_KEY = "telegram:notifications:paused"
 
 async def _is_paused() -> bool:
     try:
-        import redis.asyncio as aioredis
+        from redis.asyncio import Redis
         from app.config import settings as _cfg
-        r = aioredis.from_url(_cfg.redis_url_with_auth, decode_responses=True)
+        r = Redis(**_cfg.get_redis_connection_kwargs())
         async with r:
             return await r.get(_PAUSE_REDIS_KEY) == "1"
     except Exception:
@@ -42,9 +42,9 @@ async def _is_paused() -> bool:
 
 async def _set_paused(paused: bool) -> None:
     try:
-        import redis.asyncio as aioredis
+        from redis.asyncio import Redis
         from app.config import settings as _cfg
-        r = aioredis.from_url(_cfg.redis_url_with_auth, decode_responses=True)
+        r = Redis(**_cfg.get_redis_connection_kwargs())
         async with r:
             if paused:
                 await r.set(_PAUSE_REDIS_KEY, "1")
@@ -720,7 +720,8 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         sport_label = sport_labels.get(sport, "Sport")
 
         # Counter: sport-specific monthly tracking
-        r = aioredis.from_url(_cfg.redis_url_with_auth, decode_responses=True)
+        from redis.asyncio import Redis
+        r = Redis(**_cfg.get_redis_connection_kwargs())
         async with r:
             month_key = f"ricerche:{sport or 'all'}:{datetime.now().strftime('%Y-%m')}"
             count = await r.incr(month_key)
@@ -758,7 +759,8 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
 
         # Salva il sport e command_timestamp in Redis con il task ID come chiave
         command_timestamp = datetime.now(timezone.utc).isoformat()
-        r = aioredis.from_url(_cfg.redis_url_with_auth, decode_responses=True)
+        from redis.asyncio import Redis
+        r = Redis(**_cfg.get_redis_connection_kwargs())
         async with r:
             sport_value = sport or "all"
             await r.setex(f"celery:sport:{task2.id}", 3600, sport_value)
@@ -846,7 +848,8 @@ async def _handle_quote(chat_id: str) -> None:
         ] if k]
 
         lines = ["🔑 <b>Odds API — Quota mensile</b>\n"]
-        async with aioredis.from_url(settings.redis_url_with_auth, decode_responses=True) as redis_client:
+        from redis.asyncio import Redis
+        async with Redis(**settings.get_redis_connection_kwargs()) as redis_client:
             for i, k in enumerate(keys, 1):
                 tag = k[-6:]
                 rem_str = await redis_client.get(f"odds_api:remaining:{tag}")

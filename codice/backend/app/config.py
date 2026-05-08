@@ -16,13 +16,35 @@ class Settings(BaseSettings):
     redis_url: str = ""  # Full connection string (Railway)
     redis_password: str = ""  # Password only (Docker local)
 
+    def get_redis_connection_kwargs(self) -> dict:
+        """Returns Redis connection parameters for both AsyncRedis and redis.from_url()."""
+        if self.redis_url:
+            # Railway URL: redis://default:password@host:port/db
+            # Parse and extract components
+            from urllib.parse import urlparse
+            parsed = urlparse(self.redis_url)
+            return {
+                "host": parsed.hostname,
+                "port": parsed.port or 6379,
+                "password": parsed.password,
+                "db": int(parsed.path.lstrip('/')) if parsed.path else 0,
+                "decode_responses": True,
+            }
+        # Local Docker: use password-based connection
+        return {
+            "host": "redis",
+            "port": 6379,
+            "password": self.redis_password if self.redis_password else None,
+            "db": 0,
+            "decode_responses": True,
+        }
+
     @property
     def redis_url_with_auth(self) -> str:
+        # For backwards compatibility, still return a valid URL
         if self.redis_url:
-            # Railway URL format: redis://default:password@host:port/db
-            # Python-redis expects: redis://:password@host:port/db (no username)
-            url = self.redis_url.replace("redis://default:", "redis://:")
-            return url
+            # Remove 'default:' username for aioredis compatibility
+            return self.redis_url.replace("redis://default:", "redis://:")
         if self.redis_password:
             return f"redis://:{self.redis_password}@redis:6379/0"
         return "redis://redis:6379/0"
