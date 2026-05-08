@@ -31,10 +31,9 @@ class OddsFixturesClient:
             "basketball_nba",  # Includes regular season, playoffs, and finals (single key)
         ],
         "tennis": [
-            "tennis_atp_italian_open",   # ATP Masters
-            "tennis_wta_italian_open",   # WTA Masters
+            "tennis_atp_italian_open",   # ATP Masters (men only)
             # Note: The Odds API has limited tennis coverage
-            # For Grand Slams/Masters, must query tournament-specific keys
+            # For additional Grand Slams/Masters, must add tournament-specific keys
         ],
     }
 
@@ -166,6 +165,5 @@ class OddsFixturesClient:
             "soccer_uefa_europa_league": "UEFA Europa League",
             "basketball_nba": "NBA",
             "tennis_atp_italian_open": "ATP Italian Open",
-            "tennis_wta_italian_open": "WTA Italian Open",
         }
         return mapping.get(sport_key, "Unknown")
