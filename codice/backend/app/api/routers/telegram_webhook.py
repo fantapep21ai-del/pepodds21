@@ -765,6 +765,18 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         matches_for_report = []
         try:
             async with AsyncSessionLocal() as db:
+                # Step 1: Carica competizioni da The Odds API (se non già in DB)
+                logger.info("📦 Sincronizzando competizioni...")
+                from app.services.odds_fetcher import OddsAPIClient
+                odds_client = OddsAPIClient()
+                try:
+                    sports_list = await odds_client.list_sports()
+                    logger.info("✅ The Odds API: trovati %d sport", len(sports_list))
+                except Exception as e:
+                    logger.warning("⚠️ The Odds API list_sports failed: %s", e)
+                    sports_list = []
+
+                # Step 2: Fetch quote per lo sport richiesto
                 svc = IngestionService(db)
                 logger.info("📦 Fetching odds per sport=%s", sport)
                 fetch_result = await svc.ingest_all_odds(sport=sport)
