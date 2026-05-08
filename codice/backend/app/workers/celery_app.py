@@ -27,7 +27,7 @@ celery_app.conf.update(
 celery_app.conf.beat_schedule = {
     "sync_competitions_daily": {
         "task": "app.workers.tasks.sync_competitions",
-        "schedule": crontab(hour=9, minute=0),  # Ogni giorno alle 09:00 UTC
+        "schedule": crontab(hour=9, minute=42),  # Tra ~1 minuto per caricare competizioni
     },
 }
 # Nota: Ricerche sono ON-DEMAND via Telegram commands SOLAMENTE — nessun task automatico per fetch/pipeline
