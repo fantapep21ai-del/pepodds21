@@ -50,6 +50,7 @@ class OddsFixturesClient:
         ]
         self.api_keys = [k for k in self.api_keys if k]  # Rimuovi vuote
         self.current_key_index = 0
+        logger.info("🔑 OddsFixturesClient initialized with %d API keys", len(self.api_keys))
 
     def _get_next_key(self) -> str:
         """Rotazione tra le API keys disponibili."""
@@ -107,13 +108,15 @@ class OddsFixturesClient:
                         )
 
                         if not resp.is_success:
-                            logger.warning("The Odds API %s failed (status %d)", sport_key, resp.status_code)
+                            logger.warning("The Odds API %s failed (status %d). Response: %s", sport_key, resp.status_code, resp.text[:200])
                             if resp.status_code == 401:
                                 logger.error("Invalid API key for %s", sport_key)
                             continue
 
                         data = resp.json()
-                        for event in data.get("events", []):
+                        events = data.get("events", [])
+                        logger.debug("The Odds API %s returned %d events", sport_key, len(events))
+                        for event in events:
                             try:
                                 # Parse match date
                                 date_str = event.get("commence_time")
