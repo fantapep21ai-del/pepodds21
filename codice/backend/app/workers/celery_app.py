@@ -23,6 +23,11 @@ celery_app.conf.update(
 )
 
 # ── Beat schedule ──────────────────────────────────────────────────────────────
-# DISABILITATO: Tutte le ricerche sono on-demand via Telegram commands SOLAMENTE.
-# Nessun task automatico.
-celery_app.conf.beat_schedule = {}
+# Task periodici essenziali per il sistema
+celery_app.conf.beat_schedule = {
+    "sync_competitions_daily": {
+        "task": "app.workers.tasks.sync_competitions",
+        "schedule": crontab(hour=9, minute=0),  # Ogni giorno alle 09:00 UTC
+    },
+}
+# Nota: Ricerche sono ON-DEMAND via Telegram commands SOLAMENTE — nessun task automatico per fetch/pipeline
