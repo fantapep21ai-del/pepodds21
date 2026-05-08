@@ -20,15 +20,12 @@ class OddsFixturesClient:
     # Mapping sport -> sport_key su The Odds API (key esatti da API response)
     SPORT_KEYS = {
         "football": [
-            "soccer_epl",           # Premier League
-            "soccer_italy_serie_a", # Serie A (NOT soccer_italy!)
-            "soccer_germany_bundesliga",  # Bundesliga
-            "soccer_spain_la_liga", # La Liga
-            "soccer_france_ligue_one",  # Ligue 1
-            "soccer_portugal_primeira_liga",
-            "soccer_netherlands_eredivisie",
-            "soccer_uefa_champs_league",  # Champions League
-            "soccer_uefa_europa_league",  # Europa League
+            "soccer_italy_serie_a",         # Serie A
+            "soccer_germany_bundesliga",    # Bundesliga
+            "soccer_spain_la_liga",         # La Liga
+            "soccer_france_ligue_one",      # Ligue 1
+            "soccer_uefa_champs_league",    # Champions League
+            "soccer_uefa_europa_league",    # Europa League
         ],
         "basketball": [
             "basketball_nba",  # Include playoffs (no separate key)
@@ -161,13 +158,10 @@ class OddsFixturesClient:
     def _extract_competition(sport_key: str, event: dict) -> str:
         """Estrae il nome della competizione dal sport_key."""
         mapping = {
-            "soccer_epl": "Premier League",
             "soccer_italy_serie_a": "Serie A",
             "soccer_germany_bundesliga": "Bundesliga",
             "soccer_spain_la_liga": "La Liga",
             "soccer_france_ligue_one": "Ligue 1",
-            "soccer_portugal_primeira_liga": "Primeira Liga",
-            "soccer_netherlands_eredivisie": "Eredivisie",
             "soccer_uefa_champs_league": "UEFA Champions League",
             "soccer_uefa_europa_league": "UEFA Europa League",
             "basketball_nba": "NBA",
