@@ -758,16 +758,19 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         matches_for_report = []
         try:
             async with AsyncSessionLocal() as db:
-                cutoff = dt.now(tz.utc) + timedelta(hours=18)
-                where_conditions = [Match.status == "scheduled", Match.match_date <= cutoff]
+                now = dt.now(tz.utc)
+                cutoff = now + timedelta(hours=18)
+                logger.info("🔍 Querying matches: sport=%s, now=%s, cutoff=%s", sport, now, cutoff)
+                where_conditions = [Match.status == "scheduled", Match.match_date <= cutoff, Match.match_date >= now]
                 if sport:
                     where_conditions.append(Match.sport == sport)
-                result = await db.execute(select(Match).where(and_(*where_conditions)))
+                result = await db.execute(select(Match).where(and_(*where_conditions)).order_by(Match.match_date))
                 matches_list = result.scalars().all()
-                matches_for_report = [f"{m.display_name()}" for m in matches_list[:10]]  # Max 10 per brevità
+                logger.info("✅ Found %d matches", len(matches_list))
+                matches_for_report = [f"{m.display_name()}" for m in matches_list[:10]]
         except Exception as e:
-            logger.warning("Failed to fetch match list: %s", e)
-            matches_for_report = ["(match non disponibili)"]
+            logger.exception("❌ Failed to fetch match list: %s", e)
+            matches_for_report = ["(errore nel caricamento)"]
 
         # Messaggio iniziale con lista match
         matches_str = ", ".join(matches_for_report) if matches_for_report else "(nessuna partita trovata)"
