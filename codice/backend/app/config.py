@@ -39,15 +39,19 @@ class Settings(BaseSettings):
             "decode_responses": True,
         }
 
-    @property
-    def redis_url_with_auth(self) -> str:
-        # For backwards compatibility, still return a valid URL
+    def get_redis_url(self) -> str:
+        """Get corrected Redis URL for both sync and async clients."""
         if self.redis_url:
-            # Remove 'default:' username for aioredis compatibility
+            # Remove 'default:' username for client compatibility
             return self.redis_url.replace("redis://default:", "redis://:")
         if self.redis_password:
             return f"redis://:{self.redis_password}@redis:6379/0"
         return "redis://redis:6379/0"
+
+    @property
+    def redis_url_with_auth(self) -> str:
+        """Legacy property for backwards compatibility."""
+        return self.get_redis_url()
 
     # Auth
     secret_key: str
