@@ -299,30 +299,11 @@ def _format_analysis_reason(reasons: list[str]) -> str:
 
 async def send_sport_analysis_report(sport: str, matches_report: list | None = None, duration_s: float = 0.0) -> None:
     """
-    Send report with all analyzed matches and all qualifying singole per match.
+    Send detailed report: for each analyzed match, show data completeness + whether quotes found.
 
-    Args:
-        sport: "football" | "basketball" | "tennis"
-        matches_report: [
-            {
-                "match_name": str,
-                "competition": str,
-                "analysis_status": "complete" | "incomplete" | "unknown",
-                "analysis_reason": str or None,
-                "singole": [
-                    {
-                        "market": str,
-                        "outcome": str,
-                        "best_odds": float,
-                        "expected_value": float,
-                        "bookmaker": str,
-                    },
-                    ...
-                ]
-            },
-            ...
-        ] or None/[] if no matches analyzed
-        duration_s: time spent on analysis in seconds
+    Format:
+    - For each match: analisi_status + data completeness + quote found (YES/NO)
+    - If quote found: market, outcome, odds, EV%, bookmaker + "Importo: decidi tu"
     """
     if _notifications_paused():
         return
@@ -331,84 +312,60 @@ async def send_sport_analysis_report(sport: str, matches_report: list | None = N
 
     sport_emoji = {"football": "⚽", "calcio": "⚽", "basketball": "🏀", "basket": "🏀", "tennis": "🎾"}.get(sport.lower(), "📊")
     sport_label = {"football": "CALCIO", "calcio": "CALCIO", "basketball": "BASKET", "basket": "BASKET", "tennis": "TENNIS"}.get(sport.lower(), sport.upper())
-    command = {"football": "ricerca_calcio", "calcio": "ricerca_calcio", "basketball": "ricerca_nba", "basket": "ricerca_nba", "tennis": "ricerca_tennis"}.get(sport.lower(), "ricerca_calcio")
 
-    # No matches or empty report
+    # No matches
     if not matches_report:
         msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
         msg += "❌ Nessuna partita trovata nel timeframe\n"
-        msg += f"\nRiprova con /{command}\n"
+        msg += f"TEMPO: {duration_s:.1f}s\n"
         try:
             bot = Bot(token=settings.telegram_bot_token)
-            await bot.send_message(
-                chat_id=settings.telegram_chat_id,
-                text=msg,
-                parse_mode="HTML",
-            )
+            await bot.send_message(chat_id=settings.telegram_chat_id, text=msg, parse_mode="HTML")
             logger.info("No matches found for sport: %s", sport)
         except Exception as exc:
             logger.warning("Notification failed: %s", exc)
         return
 
-    # Build report header
+    # Build report: one section per match
     msg = f"{sport_emoji} <b>RICERCA {sport_label}</b>\n{_SEP}\n"
     msg += f"<b>Partite analizzate:</b> {len(matches_report)}\n\n"
 
     # Process each match
-    total_singole = 0
     for i, match in enumerate(matches_report, 1):
-        msg += f"<b>{i}. {match['match_name']}</b> — {match['competition']}\n"
+        msg += f"<b>{i}. {match['match_name']}</b> ({match['competition']})\n"
 
-        # Check analysis status
-        if match["analysis_status"] != "complete":
-            msg += f"   ⚠️ Analisi incompleta"
-            if match["analysis_reason"]:
-                msg += f": {match['analysis_reason']}"
-            msg += "\n"
+        # Data completeness
+        if match["analysis_status"] == "complete":
+            msg += "   ✓ Dati: <b>COMPLETI</b>\n"
         else:
-            msg += "   ✓ Analisi completa\n"
+            msg += f"   ⚠️ Dati: <b>PARZIALI</b>"
+            if match["analysis_reason"]:
+                msg += f" — {match['analysis_reason']}"
+            msg += "\n"
 
-        # Research metadata: Whoscored + news status
-        research_meta = match.get("research_metadata", {})
-        if research_meta:
-            whoscored_status = research_meta.get("whoscored_status", "unavailable")
-            news_status = research_meta.get("news_status", "unavailable")
-            fetch_time = research_meta.get("fetch_time_s", 0)
-
-            # Show research status compactly
-            status_emoji = "✓" if whoscored_status == "complete" and news_status == "complete" else "⚠"
-            msg += f"   {status_emoji} Ricerca: Whoscored {whoscored_status} / Notizie {news_status} ({fetch_time:.1f}s)\n"
-
-        # Show all singole for this match
+        # Quote found?
         singole = match.get("singole", [])
         if singole:
+            msg += f"   ✅ Quote trovate: <b>SÌ ({len(singole)})</b>\n"
             for j, singola in enumerate(singole, 1):
                 market_label, outcome_label = _format_market_outcome(singola["market"], singola["outcome"], sport)
-                msg += f"\n   <b>{j}.</b> {market_label} → {outcome_label}\n"
-                msg += f"       Quote: {singola['best_odds']:.2f} @ {singola['bookmaker'].replace('_', ' ').title()}\n"
-                msg += f"       EV: {singola['expected_value']:+.1%}\n"
-                total_singole += 1
+                msg += f"\n      <b>{j}.</b> {market_label} → {outcome_label}\n"
+                msg += f"          Quote: <b>{singola['best_odds']:.2f}</b> @ {singola['bookmaker'].replace('_', ' ').title()}\n"
+                msg += f"          EV: <b>{singola['expected_value']:+.1%}</b> ✓\n"
+                msg += f"          <i>Importo: decidi tu</i>\n"
         else:
-            msg += "   ❌ Nessuna singola di valore trovata\n"
+            msg += f"   ❌ Quote trovate: <b>NO</b>\n"
 
         msg += "\n"
 
     # Footer
     msg += _SEP + "\n"
-    if total_singole > 0:
-        msg += f"<b>TOTALE SINGOLE:</b> {total_singole}\n"
-    msg += f"<b>TEMPO ANALISI:</b> {duration_s:.1f}s\n"
-    if total_singole > 0:
-        msg += f"<b>AZIONE:</b> Accetta o rifiuta con /opportunita\n"
+    msg += f"TEMPO ANALISI: {duration_s:.1f}s\n"
 
     try:
         bot = Bot(token=settings.telegram_bot_token)
-        await bot.send_message(
-            chat_id=settings.telegram_chat_id,
-            text=msg,
-            parse_mode="HTML",
-        )
-        logger.info("Sport analysis report sent: %s (%d matches, %d singole, %.1fs)", sport, len(matches_report), total_singole, duration_s)
+        await bot.send_message(chat_id=settings.telegram_chat_id, text=msg, parse_mode="HTML")
+        logger.info("Sport report: %s (%d matches, %.1fs)", sport, len(matches_report), duration_s)
     except Exception as exc:
         logger.warning("Report notification failed: %s", exc)
 

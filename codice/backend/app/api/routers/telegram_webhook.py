@@ -748,7 +748,31 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         elif count > int(limit * 0.75):
             count_msg += f" ⚠️ ({count}/{limit} crediti usati)"
 
-        await _send(chat_id, f"🔍 <b>Ricerca avviata.</b>\n{sport_label}\n{count_msg}\n\n⏳ Step 1/3: Fetch completo (quote + statistiche)...")
+        # Recupera la lista match che verranno analizzati
+        from app.db.base import AsyncSessionLocal
+        from sqlalchemy import select, and_
+        from app.db.models.match import Match
+        from datetime import timedelta, timezone as tz
+        from datetime import datetime as dt
+
+        matches_for_report = []
+        try:
+            async with AsyncSessionLocal() as db:
+                cutoff = dt.now(tz.utc) + timedelta(hours=18)
+                where_conditions = [Match.status == "scheduled", Match.match_date <= cutoff]
+                if sport:
+                    where_conditions.append(Match.sport == sport)
+                result = await db.execute(select(Match).where(and_(*where_conditions)))
+                matches_list = result.scalars().all()
+                matches_for_report = [f"{m.display_name()}" for m in matches_list[:10]]  # Max 10 per brevità
+        except Exception as e:
+            logger.warning("Failed to fetch match list: %s", e)
+            matches_for_report = ["(match non disponibili)"]
+
+        # Messaggio iniziale con lista match
+        matches_str = ", ".join(matches_for_report) if matches_for_report else "(nessuna partita trovata)"
+        initial_msg = f"🔍 <b>Ricerca avviata</b>\n{sport_label}\n{count_msg}\n\n📋 <b>Partite in analisi:</b>\n{matches_str}\n\n⏳ Analisi in corso..."
+        await _send(chat_id, initial_msg)
 
         from app.workers.tasks import fetch_complete_sport_data, run_daily_pipeline
 
@@ -756,16 +780,14 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         logger.info("📦 Accodando task fetch_complete_sport_data(sport=%s)", sport)
         task1 = fetch_complete_sport_data.delay(sport=sport)
         logger.info("✅ Task accodato: %s", task1.id)
-        await _send(chat_id, "✅ Step 1/3: Quote e statistiche caricate.\n⏳ Step 2/3: Analisi AI in corso...")
 
-        # Step 2: Run pipeline (analizza e invia alert con opportunità)
+        # Step 2: Run pipeline (dopo il fetch)
         import asyncio
-        from datetime import datetime, timezone
         logger.info("⏳ Attendendo 60s per completamento fetch...")
         await asyncio.sleep(60)  # Attendi il completamento fetch (odds + stats)
         logger.info("📦 Accodando task run_daily_pipeline(sport=%s)", sport)
         task2 = run_daily_pipeline.delay()
-        logger.info("✅ Task accodato: %s", task2.id)
+        logger.info("✅ Task pipeline accodato: %s", task2.id)
 
         # Salva il sport e command_timestamp in Redis con il task ID come chiave
         command_timestamp = datetime.now(timezone.utc).isoformat()
@@ -780,7 +802,7 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         finally:
             await r.aclose()
 
-        await _send(chat_id, "✅ Step 2/3: Analisi AI avviata.\n\n🎯 Risultati in arrivo a breve...")
+        logger.info("✅ Ricerca avviata con successo (sport=%s, task=%s)", sport, task2.id)
 
     except Exception as exc:
         logger.exception("❌ Errore ricerca (sport=%s): %s", sport, exc)
