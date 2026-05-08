@@ -115,7 +115,8 @@ class OddsFixturesClient:
                             continue
 
                         data = resp.json()
-                        events = data.get("events", [])
+                        # The Odds API returns a list directly, not a dict with "events" key
+                        events = data if isinstance(data, list) else data.get("events", [])
                         logger.debug("The Odds API %s returned %d events", sport_key, len(events))
                         for event in events:
                             try:
