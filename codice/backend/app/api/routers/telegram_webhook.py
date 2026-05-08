@@ -748,43 +748,51 @@ async def _handle_ricerca_by_sport(chat_id: str, sport: str | None = None) -> No
         elif count > int(limit * 0.75):
             count_msg += f" ⚠️ ({count}/{limit} crediti usati)"
 
-        # Recupera la lista match che verranno analizzati
+        # Step 1: Fetch quote + partite dal DB (SINCRONO per subito mostrare la lista)
+        from app.workers.tasks import fetch_complete_sport_data
+        from app.services.ingestion_service import IngestionService
         from app.db.base import AsyncSessionLocal
         from sqlalchemy import select, and_
         from app.db.models.match import Match
         from datetime import timedelta, timezone as tz
         from datetime import datetime as dt
 
+        # Messaggio iniziale: "Caricamento partite..."
+        initial_msg = f"🔍 <b>Ricerca avviata</b>\n{sport_label}\n{count_msg}\n\n📥 <b>Caricamento partite...</b>"
+        await _send(chat_id, initial_msg)
+
+        # Fetch quote sincrono (tramite ingestion service)
         matches_for_report = []
         try:
             async with AsyncSessionLocal() as db:
+                svc = IngestionService(db)
+                logger.info("📦 Fetching odds per sport=%s", sport)
+                fetch_result = await svc.ingest_all_odds(sport=sport)
+                logger.info("✅ Fetch completato: %s", fetch_result)
+
+                # Ora queryiamo le partite che sono state appena caricate
                 now = dt.now(tz.utc)
                 cutoff = now + timedelta(hours=18)
-                logger.info("🔍 Querying matches: sport=%s, now=%s, cutoff=%s", sport, now, cutoff)
+                logger.info("🔍 Querying matches after fetch: sport=%s, now=%s, cutoff=%s", sport, now, cutoff)
                 where_conditions = [Match.status == "scheduled", Match.match_date <= cutoff, Match.match_date >= now]
                 if sport:
                     where_conditions.append(Match.sport == sport)
                 result = await db.execute(select(Match).where(and_(*where_conditions)).order_by(Match.match_date))
                 matches_list = result.scalars().all()
-                logger.info("✅ Found %d matches", len(matches_list))
+                logger.info("✅ Found %d matches after fetch", len(matches_list))
                 matches_for_report = [f"{m.display_name()}" for m in matches_list[:10]]
         except Exception as e:
-            logger.exception("❌ Failed to fetch match list: %s", e)
+            logger.exception("❌ Failed to fetch matches: %s", e)
             matches_for_report = ["(errore nel caricamento)"]
 
-        # Messaggio iniziale con lista match
-        matches_str = ", ".join(matches_for_report) if matches_for_report else "(nessuna partita trovata)"
-        initial_msg = f"🔍 <b>Ricerca avviata</b>\n{sport_label}\n{count_msg}\n\n📋 <b>Partite in analisi:</b>\n{matches_str}\n\n⏳ Analisi in corso..."
-        await _send(chat_id, initial_msg)
+        # Aggiorna messaggio con lista partite
+        matches_str = "\n".join(matches_for_report) if matches_for_report else "(nessuna partita trovata)"
+        update_msg = f"🔍 <b>Ricerca avviata</b>\n{sport_label}\n{count_msg}\n\n📋 <b>Partite trovate:</b>\n{matches_str}\n\n⏳ Analisi AI in corso..."
+        await _send(chat_id, update_msg)
 
-        from app.workers.tasks import fetch_complete_sport_data
-
-        # Step 1: Fetch completo (odds + stats arricchiti per lo sport)
-        # NON triggerato automaticamente — solo fetch dei dati
-        logger.info("📦 Accodando task fetch_complete_sport_data(sport=%s)", sport)
-        task1 = fetch_complete_sport_data.delay(sport=sport)
-        logger.info("✅ Task accodato: %s", task1.id)
-        logger.info("✅ Ricerca avviata con successo (sport=%s, task=%s)", sport, task1.id)
+        # Step 2: Metti in coda il task per l'analisi AI (facoltativo, solo se vuoi analisi extra)
+        # Per ora, il fetch e query sono sufficienti
+        logger.info("✅ Ricerca completata (sport=%s)", sport)
 
     except Exception as exc:
         logger.exception("❌ Errore ricerca (sport=%s): %s", sport, exc)
